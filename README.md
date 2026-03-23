@@ -12,7 +12,7 @@ _This is an early release. For details, a preprint version of our manuscript "Ca
 
 ---
 
-CanViT is a scalable recurrent architecture for fine-grained vision, and the first **Active Vision Foundation Model (AVFM)**: a foundation model for active vision that is both task-agnostic and policy-agnostic.
+CanViT is a scalable recurrent architecture for fine-grained vision, and the first **Active-Vision Foundation Model (AVFM)**: a foundation model for active vision that is both task-agnostic and policy-agnostic.
 
 CanViT processes scenes through sequences of localized glimpses, integrating observations over time into a persistent scene-wide latent workspace — the **canvas** — via **Canvas Attention**, an efficient asymmetric cross-attention mechanism which is based on Scene-Relative Rotary Position Embeddings and eliminates canvas-side QKVO projections.
 
