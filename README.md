@@ -8,7 +8,7 @@
 
 Reference PyTorch implementation of CanViT (Canvas Vision Transformer).
 
-_This is an early release. For details, a preprint version of our manuscript "CanViT: Toward Active Vision Foundation Models" will be available in the coming weeks._
+_This is an early release. For details, a preprint version of our manuscript "CanViT: Toward Active-Vision Foundation Models" will be available in the coming days._
 
 ---
 
