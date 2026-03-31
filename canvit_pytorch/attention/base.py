@@ -79,5 +79,7 @@ class CanvasAttention(nn.Module):
         q = rope_apply_with_prefix(x=q, rope=query_rope)
         k = rope_apply_with_prefix(x=k, rope=kv_rope)
 
-        out: Tensor = F.scaled_dot_product_attention(q, k, v)
+        # Cast K/V to Q's dtype for AMP compatibility (e.g. TPU autocast
+        # promotes Q to bf16 via backbone but K/V stay f32 from canvas projections).
+        out: Tensor = F.scaled_dot_product_attention(q, k.to(q.dtype), v.to(q.dtype))
         return self.out_proj(from_multihead(out))
