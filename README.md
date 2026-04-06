@@ -142,10 +142,10 @@ We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.c
 
 The following checkpoints are currently available:
 
-| Checkpoint | Task | Description |
-|------------|------|-------------|
-| [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretraining | CanViT-B/16, pretrained on IN21K via dense distillation from DINOv3 |
-| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Classification | Finetuned on ImageNet-1K (backbone + head) |
+| Checkpoint | Description |
+|------------|-------------|
+| [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretrained on IN21K via dense distillation from DINOv3 |
+| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Finetuned for ImageNet-1K classification |
 
 
 ## Citation
