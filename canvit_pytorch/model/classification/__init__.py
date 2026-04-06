@@ -1,13 +1,12 @@
 """CanViT for image classification: backbone + LN → Linear head."""
 
 import logging
-
-import torch
+from typing import cast, get_args
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 from safetensors.torch import load_file
 from torch import Tensor, nn
 
-from canvit_pytorch.backbone import create_backbone
+from canvit_pytorch.backbone import BackboneName, create_backbone
 from canvit_pytorch.model.base.config import CanViTConfig
 from canvit_pytorch.model.base.impl import CanViT, CanViTOutput, RecurrentState
 from canvit_pytorch.model.pretraining.hub import CanViTForPretrainingHFHub
@@ -87,7 +86,7 @@ class CanViTForImageClassification(
     def __init__(
         self,
         *,
-        backbone_name: str,
+        backbone_name: BackboneName,
         model_config: dict,
         n_classes: int,
     ):
@@ -178,9 +177,9 @@ class CanViTForImageClassification(
         # Build classifier with bare CanViT backbone (no pretraining heads)
         n_classes = W_fused.shape[0]
         cfg = pretrained.cfg
-        assert isinstance(cfg, type(cfg))  # just for the type checker
+        assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
         model = cls(
-            backbone_name=pretrained.backbone_name,
+            backbone_name=cast(BackboneName, pretrained.backbone_name),
             model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
             n_classes=n_classes,
         )
