@@ -31,7 +31,7 @@ We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.c
 | Checkpoint | Description |
 |------------|-------------|
 | [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretrained on IN21K via dense distillation from DINOv3 |
-| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Finetuned for ImageNet-1K classification |
+| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Finetuned for ImageNet-1K classification (trained on TPU v6e via [torch_xla](https://github.com/pytorch/xla)) |
 
 ## Quickstart
 
