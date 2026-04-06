@@ -82,6 +82,46 @@ with torch.inference_mode():
 # Start building!
 ```
 
+### ImageNet-1K Classification
+
+`CanViTForImageClassification` provides a unified interface for classification. Two construction paths, same forward pass:
+
+**From a finetuned checkpoint** (end-to-end trained on IN1K):
+
+```python
+from canvit_pytorch import CanViTForImageClassification, Viewpoint, sample_at_viewpoint
+from canvit_pytorch.preprocess import preprocess
+from PIL import Image
+import torch
+
+clf = CanViTForImageClassification.from_pretrained(
+    "canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06"
+).eval()
+```
+
+**From the pretrained backbone + a frozen DINOv3 probe** (zero-shot, no IN1K training — the pretrained CLS projection, destandardization, and [DINOv3 linear probe](https://huggingface.co/yberreby/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe) are algebraically fused into a single LN → Linear head at construction time):
+
+```python
+clf = CanViTForImageClassification.from_pretrained_with_probe(
+    pretrained_repo="canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02",
+    probe_repo="yberreby/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe",
+).eval()
+```
+
+**Both have the same forward pass:**
+
+```python
+image = preprocess(512)(Image.open("test_data/Cat03.jpg").convert("RGB")).unsqueeze(0)
+state = clf.init_state(batch_size=1, canvas_grid_size=32)
+
+with torch.inference_mode():
+    vp = Viewpoint.full_scene(batch_size=1, device=image.device)
+    glimpse = sample_at_viewpoint(spatial=image, viewpoint=vp, glimpse_size_px=128)
+    logits, state = clf(glimpse=glimpse, state=state, viewpoint=vp)
+
+print(logits.argmax(dim=-1))  # ImageNet-1K class index
+```
+
 For a full demo with classification and PCA visualization:
 
 ```bash
@@ -96,7 +136,10 @@ We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.c
 
 The following checkpoints are currently available:
 
-- [`canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02)
+| Checkpoint | Task | Description |
+|------------|------|-------------|
+| [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretraining | CanViT-B/16, pretrained on IN21K via dense distillation from DINOv3 |
+| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Classification | Finetuned on ImageNet-1K (backbone + head) |
 
 
 ## Citation

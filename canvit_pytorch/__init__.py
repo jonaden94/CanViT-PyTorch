@@ -4,11 +4,13 @@ from canvit_pytorch.backbone import BackboneName, ViTBackbone, create_backbone
 from canvit_pytorch.model import (
     CanViT,
     CanViTConfig,
+    CanViTForImageClassification,
     CanViTForPretraining,
     CanViTForPretrainingConfig,
     CanViTForPretrainingHFHub,
     CanViTOutput,
     RecurrentState,
+    fuse_probe,
 )
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer, PositionAwareStandardizer
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
@@ -19,6 +21,7 @@ __all__ = [
     "CLSStandardizer",
     "CanViT",
     "CanViTConfig",
+    "CanViTForImageClassification",
     "CanViTForPretraining",
     "CanViTForPretrainingConfig",
     "CanViTForPretrainingHFHub",
@@ -30,5 +33,6 @@ __all__ = [
     "Viewpoint",
     "ViTBackbone",
     "create_backbone",
+    "fuse_probe",
     "sample_at_viewpoint",
 ]

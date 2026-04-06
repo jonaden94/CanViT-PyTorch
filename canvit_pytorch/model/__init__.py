@@ -8,6 +8,10 @@ from canvit_pytorch.model.base import (
     RecurrentState,
     compute_rw_positions,
 )
+from canvit_pytorch.model.classification import (
+    CanViTForImageClassification,
+    fuse_probe,
+)
 from canvit_pytorch.model.pretraining import (
     CanViTForPretraining,
     CanViTForPretrainingConfig,
@@ -17,6 +21,7 @@ from canvit_pytorch.model.pretraining import (
 __all__ = [
     "CanViT",
     "CanViTConfig",
+    "CanViTForImageClassification",
     "CanViTForPretraining",
     "CanViTForPretrainingConfig",
     "CanViTForPretrainingHFHub",
@@ -24,4 +29,5 @@ __all__ = [
     "LocalTokens",
     "RecurrentState",
     "compute_rw_positions",
+    "fuse_probe",
 ]
