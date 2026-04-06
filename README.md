@@ -24,6 +24,15 @@ CanViT generalizes natively across policies, sequence length, glimpse size and c
 
 CanViT enables low-latency high-resolution dense vision, running at hundreds of sequential frames per second on commodity hardware.
 
+## Checkpoints
+
+We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.co/canvit) namespace.
+
+| Checkpoint | Description |
+|------------|-------------|
+| [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretrained on IN21K via dense distillation from DINOv3 |
+| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Finetuned for ImageNet-1K classification |
+
 ## Quickstart
 
 We recommend [`uv`](https://docs.astral.sh/uv/) for dependency management.
@@ -136,17 +145,11 @@ uv run --extra demo python demos/classify.py --mode frozen  # frozen backbone + 
 uv run --extra demo python demos/basic.py
 ```
 
-## Pretrained checkpoints
+## Supported platforms
 
-We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.co/canvit) namespace.
-
-The following checkpoints are currently available:
-
-| Checkpoint | Description |
-|------------|-------------|
-| [`canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02`](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) | Pretrained on IN21K via dense distillation from DINOv3 |
-| [`canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06`](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) | Finetuned for ImageNet-1K classification |
-
+- **CPU**
+- **CUDA** (tested on RTX 4090, H100 SXM 80GB)
+- **TPU** via [torch_xla](https://github.com/pytorch/xla) 2.9.0 (tested on TPU v6e)
 
 ## Citation
 
