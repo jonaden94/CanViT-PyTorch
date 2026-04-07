@@ -13,7 +13,7 @@ class CanViTConfig:
     n_canvas_registers: int = 16
     canvas_num_heads: int = 8
     canvas_head_dim: int = 128
-    enable_vpe: bool = False
+    enable_vpe: bool = True
 
     @property
     def canvas_dim(self) -> int:
