@@ -1,7 +1,10 @@
 """CanViT for image classification: backbone + LN → Linear head."""
 
 import logging
-from typing import cast, get_args
+import os
+from pathlib import Path
+from typing import Optional, Union, cast, get_args
+
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 from safetensors.torch import load_file
 from torch import Tensor, nn
@@ -130,6 +133,43 @@ class CanViTForImageClassification(
         """LN → Linear on [B, D] CLS token. Casts to fp32 to avoid precision loss under AMP."""
         assert cls.ndim == 2 and cls.shape[1] == self.local_dim
         return self.head(self.norm(cls.float()))
+
+    @classmethod
+    def _load_as_safetensor(cls, model: nn.Module, model_file: str, map_location: str, strict: bool) -> nn.Module:
+        state_dict = load_file(model_file, device=map_location)
+        result = model.load_state_dict(state_dict, strict=False)
+        if result.missing_keys or result.unexpected_keys:
+            msg = (
+                "\n"
+                "╔══════════════════════════════════════════════════════════════╗\n"
+                "║  WARNING: Checkpoint key mismatch during model loading!     ║\n"
+                "╚══════════════════════════════════════════════════════════════╝\n"
+            )
+            if result.missing_keys:
+                msg += (
+                    f"\n  {len(result.missing_keys)} model keys NOT found in checkpoint:\n"
+                    f"    {result.missing_keys[:5]}\n"
+                    "  → These parameters are LEFT AT RANDOM INITIALIZATION.\n"
+                    "    The model WILL produce garbage outputs.\n"
+                )
+            if result.unexpected_keys:
+                msg += (
+                    f"\n  {len(result.unexpected_keys)} checkpoint keys NOT found in model:\n"
+                    f"    {result.unexpected_keys[:5]}\n"
+                    "  → These weights were SILENTLY DROPPED.\n"
+                )
+            msg += (
+                "\n  This usually means your canvit-pytorch version doesn't match\n"
+                "  the checkpoint. Update with:\n"
+                "\n"
+                '    uv lock --upgrade-package canvit-pytorch && uv sync\n'
+                "\n"
+                "  or:\n"
+                "\n"
+                '    uv add "canvit-pytorch @ git+https://github.com/m2b3/CanViT-PyTorch.git"\n'
+            )
+            log.warning(msg)
+        return model
 
     @classmethod
     def from_pretrained_with_probe(
