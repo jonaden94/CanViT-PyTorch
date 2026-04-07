@@ -8,7 +8,12 @@ from typing import Callable, TypeVar
 import torch
 from torch import Tensor, nn
 
-from canvit_pytorch.attention import CanvasReadAttention, CanvasWriteAttention
+from canvit_pytorch.attention import (
+    CanvasReadAttention,
+    CanvasReadAttentionFull,
+    CanvasWriteAttention,
+    CanvasWriteAttentionFull,
+)
 from canvit_pytorch.backbone.vit import ViTBackbone
 from canvit_pytorch.coords import canvas_coords_for_glimpse, grid_coords
 from canvit_pytorch.model.base.config import CanViTConfig
@@ -133,16 +138,24 @@ class CanViT(nn.Module):
 
         log.info(f"CanViT: {n_blocks} blocks, rw_stride={cfg.rw_stride}, read_after={read_after}, write_after={write_after}")
 
+        ReadCls = CanvasReadAttentionFull if cfg.canvas_proj_mode == "full" else CanvasReadAttention
+        WriteCls = CanvasWriteAttentionFull if cfg.canvas_proj_mode == "full" else CanvasWriteAttention
+
         self.canvas_read = nn.ModuleList([
-            CanvasReadAttention(local_dim=local_dim, canvas_dim=canvas_dim, num_heads=cfg.canvas_num_heads)
+            ReadCls(local_dim=local_dim, canvas_dim=canvas_dim, num_heads=cfg.canvas_num_heads)
             for _ in range(len(read_after))
         ])
+        assert (cfg.canvas_update_mode == "convex") == (cfg.gate_bias_init is not None), \
+            f"convex mode requires gate_bias_init, got mode={cfg.canvas_update_mode}, gate_bias_init={cfg.gate_bias_init}"
         self.canvas_write = nn.ModuleList([
-            CanvasWriteAttention(local_dim=local_dim, canvas_dim=canvas_dim, num_heads=cfg.canvas_num_heads)
+            WriteCls(local_dim=local_dim, canvas_dim=canvas_dim,
+                     num_heads=cfg.canvas_num_heads, gate_bias_init=cfg.gate_bias_init)
             for _ in range(len(write_after))
         ])
 
-        log.info(f"Canvas attention: {len(read_after)} reads, {len(write_after)} writes, vpe={cfg.enable_vpe}")
+        log.info(f"Canvas attention: {len(read_after)} reads, {len(write_after)} writes, "
+                 f"mode={cfg.canvas_update_mode}, vpe={cfg.enable_vpe}"
+                 + (f", gate_bias_init={cfg.gate_bias_init}" if cfg.gate_bias_init is not None else ""))
 
         canvas_scale = 1.0 / math.sqrt(canvas_dim)
         self.canvas_register_init = nn.Parameter(torch.randn(1, cfg.n_canvas_registers, canvas_dim) * canvas_scale)
@@ -274,7 +287,7 @@ class CanViT(nn.Module):
                 write_out = self.canvas_write[write_idx](
                     query=canvas, kv=local, query_rope=spatial_rope, kv_rope=local_rope_xattn
                 )
-                canvas = canvas + write_out
+                canvas = write_out if self.cfg.canvas_update_mode == "convex" else canvas + write_out
                 write_idx += 1
 
         out = LocalTokens.unpack(local, has_vpe=has_vpe, n_registers=n_regs, n_patches=n_patches)
