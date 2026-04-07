@@ -4,11 +4,17 @@
   <img src="assets/canvas_attention_across_scales.png" alt="Canvas attention across scales — two example trajectories showing glimpses, canvas crops, and full canvas PCA/change maps over multiple timesteps." width="100%">
 </p>
 
+_[CanViT: Toward Active-Vision Foundation Models](https://arxiv.org/abs/2603.22570) (arXiv:2603.22570)_
+
 **Yohaï-Eliel Berreby, Sabrina Du, Audrey Durand, B. Suresh Krishna**
 
-Reference PyTorch implementation of CanViT (Canvas Vision Transformer).
+Reference PyTorch implementation of CanViT, the Canvas Vision Transformer.
 
-_For details, see our preprint: [CanViT: Toward Active-Vision Foundation Models](https://arxiv.org/abs/2603.22570)._
+### News
+
+- **2026-04-06**: [Finetuned IN1K checkpoint](https://huggingface.co/canvit/canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06) — **84.5% top-1**. New `CanViTForImageClassification` API.
+- **2026-03-23**: Preprint v1 ([arXiv:2603.22570](https://arxiv.org/abs/2603.22570)).
+- **2026-02-18**: Initial code and [first pretrained checkpoint](https://huggingface.co/canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02) release.
 
 ---
 
