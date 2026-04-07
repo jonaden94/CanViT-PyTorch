@@ -1,5 +1,7 @@
 # CanViT (Canvas Vision Transformer) -- PyTorch
 
+[![PyPI Downloads](https://static.pepy.tech/badge/canvit-pytorch)](https://pepy.tech/projects/canvit-pytorch)
+
 <p align="center">
   <img src="assets/canvas_attention_across_scales.png" alt="Canvas attention across scales — two example trajectories showing glimpses, canvas crops, and full canvas PCA/change maps over multiple timesteps." width="100%">
 </p>
