@@ -52,7 +52,7 @@ class TestFromPretrainedWithProbe:
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
             logits_combined, _ = clf(glimpse=glimpse, state=state, viewpoint=vp)
-            out = clf.backbone_forward(glimpse=glimpse, state=state, viewpoint=vp)
+            out = clf.canvit_forward(glimpse=glimpse, state=state, viewpoint=vp)
             logits_split = clf.head_forward(out.state.recurrent_cls[:, 0])
         assert (logits_combined - logits_split).abs().max() < 1e-6
 
@@ -68,10 +68,10 @@ class TestFromPretrainedWithProbe:
 
         with torch.inference_mode():
             # Run both backbones on same input — they have the same weights
-            state_fused = clf.backbone.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
+            state_fused = clf.canvit.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
             state_unfused = pretrained.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
 
-            out_fused = clf.backbone(glimpse=glimpse, state=state_fused, viewpoint=vp)
+            out_fused = clf.canvit(glimpse=glimpse, state=state_fused, viewpoint=vp)
             out_unfused = pretrained(glimpse=glimpse, state=state_unfused, viewpoint=vp)
 
             # Unfused: norm → proj → destandardize → probe
@@ -112,7 +112,7 @@ class TestEndToEnd:
 
     @staticmethod
     def _classify_cat(clf: CanViTForImageClassification) -> int:
-        img_size = CANVAS_GRID * clf.backbone.backbone.patch_size_px
+        img_size = CANVAS_GRID * clf.canvit.backbone.patch_size_px
         image = preprocess(img_size)(Image.open(CAT_IMAGE).convert("RGB"))
         assert isinstance(image, torch.Tensor)
         image = image.unsqueeze(0)

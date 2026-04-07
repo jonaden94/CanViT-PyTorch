@@ -95,36 +95,36 @@ class CanViTForImageClassification(
         known_fields = CanViTConfig.__dataclass_fields__
         cfg_dict = {k: v for k, v in model_config.items() if k in known_fields}
         cfg = CanViTConfig(**cfg_dict)
-        self.backbone = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
-        D = self.backbone.local_dim
+        self.canvit = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
+        D = self.canvit.local_dim
         self.norm = nn.LayerNorm(D)
         self.head = nn.Linear(D, n_classes)
 
     @property
     def local_dim(self) -> int:
         """Embedding dimension of the backbone (and head input)."""
-        return self.backbone.local_dim
+        return self.canvit.local_dim
 
     @property
     def n_classes(self) -> int:
         return self.head.out_features
 
     def init_state(self, *, batch_size: int, canvas_grid_size: int) -> RecurrentState:
-        return self.backbone.init_state(batch_size=batch_size, canvas_grid_size=canvas_grid_size)
+        return self.canvit.init_state(batch_size=batch_size, canvas_grid_size=canvas_grid_size)
 
     def forward(
         self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
     ) -> tuple[Tensor, RecurrentState]:
         """Returns (logits [B, n_classes], new_state). Head casts to fp32 under AMP."""
-        out = self.backbone(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
         cls = out.state.recurrent_cls[:, 0].float()
         return self.head(self.norm(cls)), out.state
 
-    def backbone_forward(
+    def canvit_forward(
         self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
     ) -> CanViTOutput:
-        """Run backbone only (for training with separate head_forward)."""
-        return self.backbone(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        """Run CanViT only (for training with separate head_forward)."""
+        return self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
 
     def head_forward(self, cls: Tensor) -> Tensor:
         """LN → Linear on [B, D] CLS token. Casts to fp32 to avoid precision loss under AMP."""
@@ -189,7 +189,7 @@ class CanViTForImageClassification(
                    if not any(k.startswith(pfx) for pfx in
                               ("scene_cls_head.", "scene_patches_head.",
                                "cls_standardizers.", "scene_standardizers."))}
-        missing, unexpected = model.backbone.load_state_dict(base_sd, strict=False)
+        missing, unexpected = model.canvit.load_state_dict(base_sd, strict=False)
         assert not missing, f"Missing backbone keys: {missing}"
         assert not unexpected, f"Unexpected backbone keys: {unexpected}"
 

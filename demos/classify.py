@@ -89,7 +89,7 @@ def main():
     clf = load_classifier(args.mode)
     log.info("Loaded: %d classes, %d-dim backbone", clf.n_classes, clf.local_dim)
 
-    img_size = CANVAS_GRID * clf.backbone.backbone.patch_size_px
+    img_size = CANVAS_GRID * clf.canvit.backbone.patch_size_px
     image = preprocess(img_size)(Image.open(args.image).convert("RGB"))
     assert isinstance(image, torch.Tensor)
     image = image.unsqueeze(0)
