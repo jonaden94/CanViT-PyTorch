@@ -1,9 +1,7 @@
 """CanViT for image classification: backbone + LN → Linear head."""
 
 import logging
-import os
-from pathlib import Path
-from typing import Optional, Union, cast, get_args
+from typing import cast, get_args
 
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 from safetensors.torch import load_file
@@ -136,26 +134,26 @@ class CanViTForImageClassification(
 
     @classmethod
     def _load_as_safetensor(cls, model: nn.Module, model_file: str, map_location: str, strict: bool) -> nn.Module:
-        state_dict = load_file(model_file, device=map_location)
-        result = model.load_state_dict(state_dict, strict=False)
-        if result.missing_keys or result.unexpected_keys:
+        import safetensors.torch
+        missing, unexpected = safetensors.torch.load_model(model, model_file, strict=False, device=map_location)
+        if missing or unexpected:
             msg = (
                 "\n"
                 "╔══════════════════════════════════════════════════════════════╗\n"
                 "║  WARNING: Checkpoint key mismatch during model loading!     ║\n"
                 "╚══════════════════════════════════════════════════════════════╝\n"
             )
-            if result.missing_keys:
+            if missing:
                 msg += (
-                    f"\n  {len(result.missing_keys)} model keys NOT found in checkpoint:\n"
-                    f"    {result.missing_keys[:5]}\n"
+                    f"\n  {len(missing)} model keys NOT found in checkpoint:\n"
+                    f"    {sorted(missing)[:5]}\n"
                     "  → These parameters are LEFT AT RANDOM INITIALIZATION.\n"
                     "    The model WILL produce garbage outputs.\n"
                 )
-            if result.unexpected_keys:
+            if unexpected:
                 msg += (
-                    f"\n  {len(result.unexpected_keys)} checkpoint keys NOT found in model:\n"
-                    f"    {result.unexpected_keys[:5]}\n"
+                    f"\n  {len(unexpected)} checkpoint keys NOT found in model:\n"
+                    f"    {sorted(unexpected)[:5]}\n"
                     "  → These weights were SILENTLY DROPPED.\n"
                 )
             msg += (
