@@ -48,8 +48,10 @@ We release checkpoints on HuggingFace under the [`canvit`](https://huggingface.c
 We recommend [`uv`](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-uv add canvit-pytorch
+uv add "canvit-pytorch @ git+https://github.com/m2b3/CanViT-PyTorch.git"
 ```
+
+A [`canvit-pytorch`](https://pypi.org/project/canvit-pytorch/) package is also available on PyPI but is updated less often — we recommend the git version in most cases.
 
 ```python
 from canvit_pytorch import CanViTForPretrainingHFHub, Viewpoint, sample_at_viewpoint
