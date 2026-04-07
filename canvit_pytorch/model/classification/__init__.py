@@ -8,6 +8,7 @@ from safetensors.torch import load_file
 from torch import Tensor, nn
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
+from canvit_pytorch.model.hub_mixin import SafeHubMixin
 from canvit_pytorch.model.base.config import CanViTConfig
 from canvit_pytorch.model.base.impl import CanViT, CanViTOutput, RecurrentState
 from canvit_pytorch.model.pretraining.hub import CanViTForPretrainingHFHub
@@ -59,6 +60,7 @@ def fuse_probe(
 
 class CanViTForImageClassification(
     nn.Module,
+    SafeHubMixin,
     PyTorchModelHubMixin,
     library_name="canvit-pytorch",
     repo_url="https://github.com/m2b3/CanViT-PyTorch",
@@ -131,43 +133,6 @@ class CanViTForImageClassification(
         """LN → Linear on [B, D] CLS token. Casts to fp32 to avoid precision loss under AMP."""
         assert cls.ndim == 2 and cls.shape[1] == self.local_dim
         return self.head(self.norm(cls.float()))
-
-    @classmethod
-    def _load_as_safetensor(cls, model: nn.Module, model_file: str, map_location: str, strict: bool) -> nn.Module:
-        import safetensors.torch
-        missing, unexpected = safetensors.torch.load_model(model, model_file, strict=False, device=map_location)
-        if missing or unexpected:
-            msg = (
-                "\n"
-                "╔══════════════════════════════════════════════════════════════╗\n"
-                "║  WARNING: Checkpoint key mismatch during model loading!     ║\n"
-                "╚══════════════════════════════════════════════════════════════╝\n"
-            )
-            if missing:
-                msg += (
-                    f"\n  {len(missing)} model keys NOT found in checkpoint:\n"
-                    f"    {sorted(missing)[:5]}\n"
-                    "  → These parameters are LEFT AT RANDOM INITIALIZATION.\n"
-                    "    The model WILL produce garbage outputs.\n"
-                )
-            if unexpected:
-                msg += (
-                    f"\n  {len(unexpected)} checkpoint keys NOT found in model:\n"
-                    f"    {sorted(unexpected)[:5]}\n"
-                    "  → These weights were SILENTLY DROPPED.\n"
-                )
-            msg += (
-                "\n  This usually means your canvit-pytorch version doesn't match\n"
-                "  the checkpoint. Update with:\n"
-                "\n"
-                '    uv lock --upgrade-package canvit-pytorch && uv sync\n'
-                "\n"
-                "  or:\n"
-                "\n"
-                '    uv add "canvit-pytorch @ git+https://github.com/m2b3/CanViT-PyTorch.git"\n'
-            )
-            log.warning(msg)
-        return model
 
     @classmethod
     def from_pretrained_with_probe(

@@ -8,10 +8,7 @@ from canvit_pytorch.model.base import (
     RecurrentState,
     compute_rw_positions,
 )
-from canvit_pytorch.model.classification import (
-    CanViTForImageClassification,
-    fuse_probe,
-)
+from canvit_pytorch.model.classification import CanViTForImageClassification, fuse_probe
 from canvit_pytorch.model.pretraining import (
     CanViTForPretraining,
     CanViTForPretrainingConfig,
