@@ -173,7 +173,7 @@ We aim to maintain compatibility with [`torch.export`](https://docs.pytorch.org/
 If you encounter errors loading pretrained checkpoints, ensure you are using the latest version of the package:
 
 ```bash
-uv add "canvit-pytorch>=0.1.9"
+uv lock --upgrade-package canvit-pytorch && uv sync
 ```
 
 ## Citation
