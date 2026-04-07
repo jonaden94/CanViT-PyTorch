@@ -159,6 +159,10 @@ uv run --extra demo python demos/basic.py
 - **CUDA** (tested on RTX 4090, H100 SXM 80GB)
 - **TPU** via [torch_xla](https://github.com/pytorch/xla) 2.9.0 (tested on TPU v6e)
 
+[JAX](https://github.com/jax-ml/jax) and [MLX](https://github.com/ml-explore/mlx) implementations are planned for native TPU and Apple Silicon support.
+
+We aim to maintain compatibility with [`torch.export`](https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/export.html) and [ONNX Runtime](https://onnxruntime.ai/). Please [file an issue](https://github.com/m2b3/CanViT-PyTorch/issues) if you encounter problems.
+
 ## Citation
 
 If you use this work, please cite our preprint:
