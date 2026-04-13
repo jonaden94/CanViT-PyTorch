@@ -1,16 +1,20 @@
 """Viewpoint Positional Encoding (VPE) via Random Fourier Features.
 
 COORDINATE CONVENTIONS (matches canvit.coords, canvit.viewpoint):
-- y, x: spatiotopic scene coordinates in [-1, 1] (scene center at origin)
+- y, x: spatiotopic scene coordinates in [-1, 1]
+    (scene center at origin (x=0,y=0))
 - s: scale = FOV_width / scene_width
   - s = 1: full scene visible (max zoom out)
-  - s < 1: zoomed in (seeing fraction s of scene)
+  - s < 1: zoomed in (seeing fraction s^2 of scene area)
   - s ∈ (0, 1]
 
 TRANSFORM:
   (y, x, s) → (y/s, x/s, log(s)) → RFF → LayerNorm
 
 y/s, x/s: position in FOV-relative units
+
+Mind the ordering between (x,y) and (y,x)
+(matrix indexing convention vs. Cartesian coordinates convention)
 """
 
 import math
