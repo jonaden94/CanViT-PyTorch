@@ -143,6 +143,27 @@ with torch.inference_mode():
 print(logits.argmax(dim=-1))  # ImageNet-1K class index
 ```
 
+### ADE20K Semantic Segmentation
+
+`CanViTForSemanticSegmentation` bundles a CanViT and a `SegmentationProbe` head into one model. `forward` returns per-pixel logits at canvas-grid resolution; `predict` adds bilinear upsampling.
+
+```python
+from canvit_pytorch import CanViTForSemanticSegmentation
+
+# Frozen CanViT + the flagship ADE20K probe (45.9% mIoU, 1024px / 64x64 canvas):
+seg = CanViTForSemanticSegmentation.from_pretrained_with_probe(
+    pretrained_repo="canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02",
+    probe_repo="canvit/probe-ade20k-40k-s1024-c64-in21k",
+).eval()
+
+state = seg.init_state(batch_size=1, canvas_grid_size=64)
+logits, state = seg(glimpse=glimpse, state=state, viewpoint=vp)               # [B, n_cls, 64, 64]
+upsampled, state = seg.predict(glimpse=glimpse, state=state, viewpoint=vp,
+                               target_size=(1024, 1024))                       # [B, n_cls, 1024, 1024]
+```
+
+The standalone `SegmentationProbe` head is also exported from `canvit_pytorch` for use on any spatial feature map. Published probes: [canvit ADE20K segmentation probes collection](https://huggingface.co/collections/canvit/canvit-ade20k-segmentation-probes).
+
 ## Demos
 
 ```bash

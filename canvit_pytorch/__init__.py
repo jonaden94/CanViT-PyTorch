@@ -8,10 +8,12 @@ from canvit_pytorch.model import (
     CanViTForPretraining,
     CanViTForPretrainingConfig,
     CanViTForPretrainingHFHub,
+    CanViTForSemanticSegmentation,
     CanViTOutput,
     RecurrentState,
     fuse_probe,
 )
+from canvit_pytorch.probes import SegmentationProbe
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer, PositionAwareStandardizer
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
 from canvit_pytorch.vpe import VPEEncoder
@@ -25,10 +27,12 @@ __all__ = [
     "CanViTForPretraining",
     "CanViTForPretrainingConfig",
     "CanViTForPretrainingHFHub",
+    "CanViTForSemanticSegmentation",
     "CanViTOutput",
     "PatchStandardizer",
     "PositionAwareStandardizer",
     "RecurrentState",
+    "SegmentationProbe",
     "VPEEncoder",
     "Viewpoint",
     "ViTBackbone",

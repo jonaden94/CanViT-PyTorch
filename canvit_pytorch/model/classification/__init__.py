@@ -1,4 +1,4 @@
-"""CanViT for image classification: backbone + LN → Linear head."""
+"""CanViT for image classification: CanViT + LN → Linear head, fused into one HF artifact."""
 
 import logging
 from typing import cast, get_args
@@ -65,9 +65,9 @@ class CanViTForImageClassification(
     library_name="canvit-pytorch",
     repo_url="https://github.com/m2b3/CanViT-PyTorch",
 ):
-    """CanViT backbone + LN → Linear classification head.
+    """:class:`CanViT` + LN → Linear classification head.
 
-    The backbone is a bare ``CanViT`` (no pretraining heads, no standardizers).
+    Wraps a bare :class:`CanViT` (no pretraining heads, no standardizers).
     The classification head is always LN(D) → Linear(D, n_classes).
 
     Example::
@@ -75,7 +75,7 @@ class CanViTForImageClassification(
         # From HF (finetuned or pushed after fusion):
         clf = CanViTForImageClassification.from_pretrained("canvit/...").eval()
 
-        # From pretrained backbone + probe (fuses at construction time):
+        # From a pretrained CanViT + probe (fuses at construction time):
         clf = CanViTForImageClassification.from_pretrained_with_probe(
             pretrained_repo="canvit/canvitb16-add-vpe-pretrain-...",
             probe_repo="yberreby/dinov3-vitb16-...-linear-clf-probe",
@@ -142,7 +142,7 @@ class CanViTForImageClassification(
         probe_repo: str,
         canvas_grid: int = 32,
     ) -> "CanViTForImageClassification":
-        """Load pretrained backbone, fuse proj → destandardize → probe into LN → Linear.
+        """Load a pretrained CanViT, fuse proj → destandardize → probe into LN → Linear.
 
         Loads the full pretraining model temporarily to extract fusion ingredients
         (scene_cls_head, standardizers, probe), then copies only the base CanViT
@@ -157,12 +157,15 @@ class CanViTForImageClassification(
         log.info("Loading probe from %s", probe_repo)
         probe_sd = load_file(hf_hub_download(probe_repo, "model.safetensors"))
 
-        # Validate probe/backbone compatibility
+        # Validate probe/projection compatibility — the probe consumes the
+        # output of scene_cls_head["proj"] (a Linear layer in the pretrained
+        # CanViT's CLS head, NOT the inner ViT backbone).
         proj = pretrained.scene_cls_head["proj"]
         assert isinstance(proj, nn.Linear)
         probe_in_dim = probe_sd["weight"].shape[1]
         assert probe_in_dim == proj.out_features, (
-            f"Probe/backbone dim mismatch: probe expects {probe_in_dim}, backbone projects to {proj.out_features}"
+            f"Probe/projection dim mismatch: probe expects {probe_in_dim}, "
+            f"scene_cls_head proj produces {proj.out_features}"
         )
 
         cls_std, _ = pretrained.standardizers(canvas_grid)
@@ -177,7 +180,7 @@ class CanViTForImageClassification(
             b_probe=probe_sd["bias"],
         )
 
-        # Build classifier with bare CanViT backbone (no pretraining heads)
+        # Build classifier wrapping a bare CanViT (no pretraining heads)
         n_classes = W_fused.shape[0]
         cfg = pretrained.cfg
         assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
@@ -193,8 +196,8 @@ class CanViTForImageClassification(
                               ("scene_cls_head.", "scene_patches_head.",
                                "cls_standardizers.", "scene_standardizers."))}
         missing, unexpected = model.canvit.load_state_dict(base_sd, strict=False)
-        assert not missing, f"Missing backbone keys: {missing}"
-        assert not unexpected, f"Unexpected backbone keys: {unexpected}"
+        assert not missing, f"Missing CanViT keys: {missing}"
+        assert not unexpected, f"Unexpected CanViT keys: {unexpected}"
 
         # Set fused head weights
         model.head.weight.data.copy_(W_fused)

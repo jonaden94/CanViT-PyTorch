@@ -14,6 +14,7 @@ from canvit_pytorch.model.pretraining import (
     CanViTForPretrainingConfig,
     CanViTForPretrainingHFHub,
 )
+from canvit_pytorch.model.segmentation import CanViTForSemanticSegmentation
 
 __all__ = [
     "CanViT",
@@ -22,6 +23,7 @@ __all__ = [
     "CanViTForPretraining",
     "CanViTForPretrainingConfig",
     "CanViTForPretrainingHFHub",
+    "CanViTForSemanticSegmentation",
     "CanViTOutput",
     "LocalTokens",
     "RecurrentState",
