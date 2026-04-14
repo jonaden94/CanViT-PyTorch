@@ -2,7 +2,7 @@
 
 Architecture-sanity only — no HF Hub network required. Hub-loading paths
 (``from_pretrained_with_probe``, ``from_pretrained``) are exercised by
-canvit-probes' integration tests where the relevant HF artifacts live.
+canvit-specialize' integration tests where the relevant HF artifacts live.
 """
 
 import pytest
@@ -51,7 +51,7 @@ class TestSegmentationProbe:
 
     def test_state_dict_keys_stable(self):
         """Probe state_dict keys must NOT change without coordination —
-        canvit-probes' frozen-probe HF checkpoints depend on them, and so
+        canvit-specialize' frozen-probe HF checkpoints depend on them, and so
         does CanViTForSemanticSegmentation when copying probe weights into
         its composed head submodule."""
         probe = SegmentationProbe(embed_dim=32, num_classes=10)
