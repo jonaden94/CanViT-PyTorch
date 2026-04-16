@@ -158,16 +158,16 @@ class TestCanViTForSemanticSegmentation:
         assert logits.shape == (B, NUM_CLASSES, *target)
         assert new_state.canvas.shape == state.canvas.shape
 
-    def test_canvit_forward_then_head_forward(self, dummy_input):
-        """Training pattern: split CanViT forward and head forward to allow
-        per-timestep loss computation in a multi-glimpse rollout."""
+    def test_backbone_then_head(self, dummy_input):
+        """Verify callers can separate backbone + head steps: advance state via
+        `self.canvit(...)`, then apply the head directly via `self.head(spatial)`."""
         glimpse, vp = dummy_input
         seg = _minimal_seg_model().eval()
         state = seg.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
-            out = seg.canvit_forward(glimpse=glimpse, state=state, viewpoint=vp)
+            out = seg.canvit(glimpse=glimpse, state=state, viewpoint=vp)
             spatial = seg.canvit.get_spatial(out.state.canvas).view(B, CANVAS_GRID, CANVAS_GRID, -1)
-            logits = seg.head_forward(spatial)
+            logits = seg.head(spatial)
         assert logits.shape == (B, NUM_CLASSES, CANVAS_GRID, CANVAS_GRID)
 
     def test_state_dict_has_canvit_and_head(self):
