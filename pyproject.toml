@@ -52,7 +52,10 @@ dinov3-in1k-probes = { git = "https://github.com/yberreby/dinov3-in1k-probes.git
 [tool.pytest.ini_options]
 testpaths = ["canvit_pytorch", "tests"]
 python_files = ["test.py", "test_*.py"]
-markers = ["slow: marks tests as slow (deselect with '-m not slow')"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m not slow')",
+    "network: marks tests that require network access (HF Hub downloads, etc.)",
+]
 addopts = "-m 'not slow'"
 
 [tool.ruff]

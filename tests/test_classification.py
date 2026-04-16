@@ -52,8 +52,8 @@ class TestFromPretrainedWithProbe:
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
             logits_combined, _ = clf(glimpse=glimpse, state=state, viewpoint=vp)
-            out = clf.canvit_forward(glimpse=glimpse, state=state, viewpoint=vp)
-            logits_split = clf.head_forward(out.state.recurrent_cls[:, 0])
+            out = clf.canvit(glimpse=glimpse, state=state, viewpoint=vp)
+            logits_split = clf.head(clf.norm(out.state.recurrent_cls[:, 0].float()))
         assert (logits_combined - logits_split).abs().max() < 1e-6
 
     def test_fusion_matches_unfused(self, clf, dummy_input):
@@ -85,7 +85,7 @@ class TestFromPretrainedWithProbe:
             logits_unfused = probe(cls_destd)
 
             # Fused
-            logits_fused = clf.head_forward(out_fused.state.recurrent_cls[:, 0])
+            logits_fused = clf.head(clf.norm(out_fused.state.recurrent_cls[:, 0].float()))
 
         assert (logits_fused - logits_unfused).abs().max() < 1e-4
 

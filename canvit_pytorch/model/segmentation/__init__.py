@@ -15,7 +15,7 @@ from torch.nn import functional as F
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
 from canvit_pytorch.model.base.config import CanViTConfig
-from canvit_pytorch.model.base.impl import CanViT, CanViTOutput, RecurrentState
+from canvit_pytorch.model.base.impl import CanViT, RecurrentState
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
 from canvit_pytorch.model.pretraining.hub import CanViTForPretrainingHFHub
 from canvit_pytorch.probes import SegmentationProbe
@@ -84,20 +84,6 @@ class CanViTForSemanticSegmentation(
     def init_state(self, *, batch_size: int, canvas_grid_size: int) -> RecurrentState:
         return self.canvit.init_state(batch_size=batch_size, canvas_grid_size=canvas_grid_size)
 
-    def canvit_forward(
-        self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
-    ) -> CanViTOutput:
-        """Run CanViT only (for training where head_forward is called per timestep)."""
-        return self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
-
-    def head_forward(self, spatial_hwd: Tensor) -> Tensor:
-        """Apply seg head to canvas spatial tokens.
-
-        Input: ``[B, H, W, D]`` (canvas spatial tokens reshaped to grid).
-        Output: ``[B, num_classes, H, W]`` logits.
-        """
-        return self.head(spatial_hwd)
-
     def forward(
         self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
     ) -> tuple[Tensor, RecurrentState]:
@@ -106,8 +92,11 @@ class CanViTForSemanticSegmentation(
         Returns ``(logits [B, num_classes, G, G], new_state)`` where ``G`` is the
         canvas grid size of ``state``. Use :meth:`predict` to also bilinearly
         upsample logits to a target spatial resolution.
+
+        For backbone-only (no head), call ``self.canvit(...)`` directly.
+        For head-only on a cached state, call ``self.head(spatial_hwd)`` directly.
         """
-        out = self.canvit_forward(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
         spatial = self.canvit.get_spatial(out.state.canvas)  # [B, G*G, D]
         B, n_spatial, D = spatial.shape
         canvas_grid = int(n_spatial ** 0.5)
@@ -115,7 +104,7 @@ class CanViTForSemanticSegmentation(
             f"Canvas has {n_spatial} spatial tokens, not a perfect square — "
             f"init_state must be called with a valid canvas_grid_size."
         )
-        return self.head_forward(spatial.view(B, canvas_grid, canvas_grid, D)), out.state
+        return self.head(spatial.view(B, canvas_grid, canvas_grid, D)), out.state
 
     def predict(
         self,
