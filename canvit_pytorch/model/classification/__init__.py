@@ -115,24 +115,24 @@ class CanViTForImageClassification(
     def init_state(self, *, batch_size: int, canvas_grid_size: int) -> RecurrentState:
         return self.canvit.init_state(batch_size=batch_size, canvas_grid_size=canvas_grid_size)
 
-    def forward(
-        self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
-    ) -> tuple[Tensor, RecurrentState]:
-        """Returns (logits [B, n_classes], new_state). Head casts to fp32 under AMP."""
-        out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
-        cls = out.state.recurrent_cls[:, 0].float()
-        return self.head(self.norm(cls)), out.state
-
     def canvit_forward(
         self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
     ) -> CanViTOutput:
-        """Run CanViT only (for training with separate head_forward)."""
+        """Run CanViT backbone only. Use when `head_forward` is called per timestep
+        with cached state, or when a different head is desired."""
         return self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
 
     def head_forward(self, cls: Tensor) -> Tensor:
         """LN → Linear on [B, D] CLS token. Casts to fp32 to avoid precision loss under AMP."""
         assert cls.ndim == 2 and cls.shape[1] == self.local_dim
         return self.head(self.norm(cls.float()))
+
+    def forward(
+        self, *, glimpse: Tensor, state: RecurrentState, viewpoint: Viewpoint,
+    ) -> tuple[Tensor, RecurrentState]:
+        """Returns (logits [B, n_classes], new_state). Delegates to canvit_forward + head_forward."""
+        out = self.canvit_forward(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        return self.head_forward(out.state.recurrent_cls[:, 0]), out.state
 
     @classmethod
     def from_pretrained_with_probe(
