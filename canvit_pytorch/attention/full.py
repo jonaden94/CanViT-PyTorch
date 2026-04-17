@@ -4,6 +4,8 @@ Dense Linear projections on BOTH local and canvas streams,
 unlike the default asymmetric attention (Identity on canvas side).
 """
 
+from typing import override
+
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -72,6 +74,7 @@ class CanvasWriteAttentionFull(CanvasAttention):
     def is_convex(self) -> bool:
         return self.gate_linear is not None
 
+    @override
     def forward(
         self,
         *,

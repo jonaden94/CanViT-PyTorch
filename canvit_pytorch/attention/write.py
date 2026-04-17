@@ -1,3 +1,5 @@
+from typing import override
+
 import torch.nn.functional as F
 from torch import Tensor, nn
 
@@ -42,6 +44,7 @@ class CanvasWriteAttention(CanvasAttention):
     def is_convex(self) -> bool:
         return self.gate_linear is not None
 
+    @override
     def forward(
         self,
         *,
