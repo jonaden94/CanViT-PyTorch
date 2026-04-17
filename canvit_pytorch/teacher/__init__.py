@@ -56,7 +56,7 @@ def load_teacher(
     log.info(f"Loading teacher: {repo_id}")
     log.info(f"  device: {device}")
 
-    hf_model = AutoModel.from_pretrained(repo_id, torch_dtype=torch.float32)
+    hf_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32)
     assert isinstance(hf_model, PreTrainedModel)
     hf_model.eval()
     for p in hf_model.parameters():
