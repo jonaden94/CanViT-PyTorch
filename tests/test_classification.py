@@ -20,7 +20,7 @@ CAT_IMAGE = "test_data/Cat03.jpg"
 CANVAS_GRID = 32
 B = 2
 
-# IN1K class index for "tabby cat" (281), "tiger cat" (282), "Egyptian cat" (285)
+# IN1k class index for "tabby cat" (281), "tiger cat" (282), "Egyptian cat" (285)
 CAT_CLASSES = {281, 282, 285}
 
 
