@@ -1,6 +1,7 @@
 """CanViT for image classification: CanViT + LN → Linear head, fused into one HF artifact."""
 
 import logging
+from pathlib import Path
 from typing import cast, get_args
 
 from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
@@ -148,7 +149,9 @@ class CanViTForImageClassification(
         D = pretrained.local_dim
 
         log.info("Loading probe from %s", probe_repo)
-        probe_sd = load_file(hf_hub_download(probe_repo, "model.safetensors"))
+        probe_path = Path(probe_repo)
+        probe_st = probe_path / "model.safetensors" if probe_path.is_dir() else hf_hub_download(probe_repo, "model.safetensors")
+        probe_sd = load_file(probe_st)
 
         # Validate probe/projection compatibility — the probe consumes the
         # output of scene_cls_head["proj"] (a Linear layer in the pretrained
