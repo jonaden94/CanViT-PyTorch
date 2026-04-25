@@ -120,12 +120,12 @@ clf = CanViTForImageClassification.from_pretrained(
 ).eval()
 ```
 
-**From the pretrained (frozen) backbone + a [DINOv3 linear probe](https://huggingface.co/yberreby/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe)**:
+**From the pretrained (frozen) backbone + a [DINOv3 linear probe](https://huggingface.co/canvit/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe)**:
 
 ```python
 clf = CanViTForImageClassification.from_pretrained_with_probe(
     pretrained_repo="canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02",
-    probe_repo="yberreby/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe",
+    probe_repo="canvit/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe",
 ).eval()
 ```
 
