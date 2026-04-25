@@ -39,8 +39,8 @@ class CanViTForSemanticSegmentation(
     Example::
 
         seg = CanViTForSemanticSegmentation.from_pretrained_with_probe(
-            pretrained_repo="canvit/canvitb16-add-vpe-pretrain-...",
-            probe_repo="canvit/probe-ade20k-40k-s512-c32-in21k",
+            pretrained_repo="<org>/canvitb16-add-vpe-pretrain-...",
+            probe_repo="<org>/probe-ade20k-40k-s512-c32-in21k",
         ).eval()
 
         state = seg.init_state(batch_size=B, canvas_grid_size=32)
