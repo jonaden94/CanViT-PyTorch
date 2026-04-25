@@ -188,6 +188,7 @@ We aim to maintain compatibility with [`torch.export`](https://docs.pytorch.org/
 
 ## See also
 
+- [CanViT-pretrain](https://github.com/m2b3/CanViT-pretrain) — pretraining harness (passive-to-active dense distillation from DINOv3)
 - [CanViT-MLX](https://github.com/yberreby/CanViT-MLX) — MLX implementation for Apple Silicon (experimental)
 - [CanViT-NNX](https://github.com/yberreby/CanViT-NNX) — JAX/Flax NNX implementation (experimental)
 
