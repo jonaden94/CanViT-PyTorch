@@ -9,14 +9,14 @@ from canvit_pytorch import (
     CanViTForPretrainingHFHub,
     Viewpoint,
     fuse_probe,
-    resolve_repo,
+    resolve_canvit_repo,
     sample_at_viewpoint,
 )
 from canvit_pytorch.preprocess import preprocess
 
-PRETRAINED_REPO = resolve_repo("canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02")
-PROBE_REPO = resolve_repo("dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe")
-FINETUNED_REPO = resolve_repo("canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06")
+PRETRAINED_REPO = resolve_canvit_repo("canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02")
+PROBE_REPO = resolve_canvit_repo("dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe")
+FINETUNED_REPO = resolve_canvit_repo("canvitb16-add-vpe-finetune-g128px-s512px-in1k-2026-04-06")
 CAT_IMAGE = "test_data/Cat03.jpg"
 CANVAS_GRID = 32
 B = 2

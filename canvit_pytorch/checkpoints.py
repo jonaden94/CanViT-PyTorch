@@ -1,22 +1,24 @@
-"""Checkpoint repo-id resolution.
+"""Repo-id construction for canvit-org models and probes.
 
-Single source of truth for the HF org and the local-checkpoint env var.
-If ``$CANVIT_CHECKPOINTS`` is set and contains a directory matching the
-sanitized form of the canonical repo-id (``<root>/<HF_ORG>--<name>``),
-:func:`resolve_repo` returns that local path; otherwise it returns the
-canonical Hub repo-id. Both shapes are accepted by ``from_pretrained``.
+Single source of truth for the canvit-org HF prefix. Every canvit-org
+repo-id flows through :func:`resolve_canvit_repo`; third-party repos
+(``facebook/...``, etc.) stay as bare string literals.
+
+The default ``"canvit"`` resolves to canonical Hub IDs (e.g.
+``canvit/canvitb16-...``). Override via ``$CANVIT_REPO_ROOT`` to redirect
+every load — the value can be either an HF org prefix or a local path:
+
+    # Anonymous-review bundle: ship checkpoints in a local directory.
+    export CANVIT_REPO_ROOT="$(pwd)/canvit_checkpoints"
+
+Both shapes work transparently because ``PyTorchModelHubMixin.from_pretrained``
+takes either an HF repo-id or a local directory path.
 """
 
 import os
-from pathlib import Path
 
-HF_ORG = "canvit"
-_CHECKPOINT_ROOT = os.environ.get("CANVIT_CHECKPOINTS")
+CANVIT_REPO_ROOT = os.environ.get("CANVIT_REPO_ROOT", "canvit").rstrip("/")
 
 
-def resolve_repo(name: str) -> str:
-    canonical = f"{HF_ORG}/{name}"
-    if not _CHECKPOINT_ROOT:
-        return canonical
-    local = Path(_CHECKPOINT_ROOT) / canonical.replace("/", "--")
-    return str(local) if local.is_dir() else canonical
+def resolve_canvit_repo(name: str) -> str:
+    return f"{CANVIT_REPO_ROOT}/{name}"
