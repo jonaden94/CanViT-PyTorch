@@ -47,7 +47,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-dinov3-in1k-probes = { git = "https://github.com/yberreby/dinov3-in1k-probes.git" }
+dinov3-in1k-probes = { git = "https://github.com/m2b3/dinov3-in1k-probes.git" }
 
 [tool.pytest.ini_options]
 testpaths = ["canvit_pytorch", "tests"]
