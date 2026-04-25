@@ -74,12 +74,12 @@ class CanViTForImageClassification(
     Example::
 
         # From HF (finetuned or pushed after fusion):
-        clf = CanViTForImageClassification.from_pretrained("canvit/...").eval()
+        clf = CanViTForImageClassification.from_pretrained("<org>/<repo>").eval()
 
         # From a pretrained CanViT + probe (fuses at construction time):
         clf = CanViTForImageClassification.from_pretrained_with_probe(
-            pretrained_repo="canvit/canvitb16-add-vpe-pretrain-...",
-            probe_repo="yberreby/dinov3-vitb16-...-linear-clf-probe",
+            pretrained_repo="<org>/canvitb16-add-vpe-pretrain-...",
+            probe_repo="<org>/dinov3-vitb16-...-linear-clf-probe",
         ).eval()
 
         # Both have the same forward:

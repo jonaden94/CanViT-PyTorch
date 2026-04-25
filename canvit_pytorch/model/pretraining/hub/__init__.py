@@ -121,7 +121,7 @@ class CanViTForPretrainingHFHub(
     """CanViTForPretraining with HuggingFace Hub integration.
 
     Usage:
-        model = CanViTForPretrainingHFHub.from_pretrained("canvit/canvitb16-add-vpe-pretrain-g128px-s512px-in21k-dv3b16-2026-02-02")
+        model = CanViTForPretrainingHFHub.from_pretrained("<org>/canvitb16-add-vpe-pretrain-...")
     """
 
     def __init__(

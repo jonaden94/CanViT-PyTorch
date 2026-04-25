@@ -6,7 +6,7 @@ PyTorchModelHubMixin (works standalone OR as a nested submodule of
 
 Example::
 
-    probe = SegmentationProbe.from_pretrained("canvit/probe-ade20k-...")
+    probe = SegmentationProbe.from_pretrained("<org>/probe-ade20k-...")
     logits = probe(features)  # [B, H, W, D] -> [B, num_classes, H, W]
 """
 

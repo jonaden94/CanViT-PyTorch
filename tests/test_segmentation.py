@@ -12,6 +12,7 @@ from canvit_pytorch import (
     CanViTForSemanticSegmentation,
     SegmentationProbe,
     Viewpoint,
+    resolve_repo,
     sample_at_viewpoint,
 )
 
@@ -92,7 +93,7 @@ class TestSegmentationProbeHFIntegration:
 
     def test_from_pretrained_published_canvas_probe(self) -> None:
         """The flagship 1024px/c64 canvas probe round-trips cleanly."""
-        probe = SegmentationProbe.from_pretrained("canvit/probe-ade20k-40k-s512-c32-in21k").eval()
+        probe = SegmentationProbe.from_pretrained(resolve_repo("probe-ade20k-40k-s512-c32-in21k")).eval()
         assert probe.embed_dim == 1024
         assert probe.num_classes == 150
         with torch.inference_mode():
