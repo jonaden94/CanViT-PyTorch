@@ -1,7 +1,7 @@
 """CanViT: Dual-stream vision transformer with canvas cross-attention."""
 
 from canvit_pytorch.backbone import BackboneName, ViTBackbone, create_backbone
-from canvit_pytorch.checkpoints import HF_ORG, resolve_repo
+from canvit_pytorch.checkpoints import CANVIT_REPO_ROOT, resolve_canvit_repo
 from canvit_pytorch.model import (
     CanViT,
     CanViTConfig,
@@ -29,8 +29,8 @@ __all__ = [
     "CanViTForPretrainingConfig",
     "CanViTForPretrainingHFHub",
     "CanViTForSemanticSegmentation",
+    "CANVIT_REPO_ROOT",
     "CanViTOutput",
-    "HF_ORG",
     "PatchStandardizer",
     "PositionAwareStandardizer",
     "RecurrentState",
@@ -40,6 +40,6 @@ __all__ = [
     "ViTBackbone",
     "create_backbone",
     "fuse_probe",
-    "resolve_repo",
+    "resolve_canvit_repo",
     "sample_at_viewpoint",
 ]
