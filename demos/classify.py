@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """CanViT classification demo: classify an image using sequential glimpses.
 
 Shows both construction paths for CanViTForImageClassification:
-  1. Finetuned model from HF
-  2. Pretrained backbone + fused DINOv3 probe
+  1. Finetuned model checkpoint
+  2. Frozen pretrained CanViT checkpoint + fused DINOv3 probe
 
 Both produce the same forward API. The model processes glimpses
 sequentially, refining its prediction with each new observation.
@@ -80,14 +79,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", type=Path, default=Path("test_data/Cat03.jpg"))
     parser.add_argument("--mode", choices=["finetuned", "frozen"], default="finetuned",
-                        help="'finetuned' uses the finetuned checkpoint, 'frozen' uses the pretrained backbone with a fused DINOv3 probe")
+                        help="'finetuned' uses the finetuned checkpoint, 'frozen' uses a pretrained CanViT checkpoint with a fused DINOv3 probe")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s  %(message)s")
 
     log.info("Loading classifier (mode=%s)...", args.mode)
     clf = load_classifier(args.mode)
-    log.info("Loaded: %d classes, %d-dim backbone", clf.n_classes, clf.local_dim)
+    log.info("Loaded: %d classes, %d-dim CanViT local stream", clf.n_classes, clf.local_dim)
 
     img_size = CANVAS_GRID * clf.canvit.backbone.patch_size_px
     image = preprocess(img_size)(Image.open(args.image).convert("RGB"))

@@ -107,7 +107,7 @@ with torch.inference_mode():
 
 `CanViTForImageClassification` provides a unified interface for classification. Two construction paths, same forward pass:
 
-**From a finetuned checkpoint** (backbone + head trained on IN1k):
+**From a finetuned checkpoint** (CanViT + head trained on IN1k):
 
 ```python
 from canvit_pytorch import CanViTForImageClassification, Viewpoint, sample_at_viewpoint
@@ -120,7 +120,7 @@ clf = CanViTForImageClassification.from_pretrained(
 ).eval()
 ```
 
-**From the pretrained (frozen) backbone + a [DINOv3 linear probe](https://huggingface.co/canvit/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe)**:
+**From the frozen pretrained CanViT checkpoint + a [DINOv3 linear probe](https://huggingface.co/canvit/dinov3-vitb16-lvd1689m-in1k-512x512-linear-clf-probe)**:
 
 ```python
 clf = CanViTForImageClassification.from_pretrained_with_probe(
@@ -171,8 +171,8 @@ git clone https://github.com/m2b3/CanViT-PyTorch.git
 cd CanViT-PyTorch
 
 # Classification with sequential glimpses
-uv run --extra demo python demos/classify.py                # finetuned backbone
-uv run --extra demo python demos/classify.py --mode frozen  # frozen backbone + fused probe
+uv run --extra demo python demos/classify.py                # finetuned checkpoint
+uv run --extra demo python demos/classify.py --mode frozen  # frozen CanViT + fused probe
 
 # Canvas PCA visualization with two viewing strategies
 uv run --extra demo python demos/basic.py

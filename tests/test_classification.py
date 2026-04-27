@@ -48,7 +48,7 @@ class TestFromPretrainedWithProbe:
         assert logits.shape == (B, 1000)
         assert new_state.recurrent_cls.shape == (B, 1, clf.local_dim)
 
-    def test_backbone_and_head_match_forward(self, clf, dummy_input):
+    def test_canvit_and_head_match_forward(self, clf, dummy_input):
         glimpse, vp = dummy_input
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
@@ -68,7 +68,7 @@ class TestFromPretrainedWithProbe:
         pretrained = CanViTForPretrainingHFHub.from_pretrained(PRETRAINED_REPO).eval()
 
         with torch.inference_mode():
-            # Run both backbones on same input — they have the same weights
+            # Run both CanViT instances on the same input; they have the same weights.
             state_fused = clf.canvit.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
             state_unfused = pretrained.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
 

@@ -8,7 +8,7 @@ The default ``"canvit"`` resolves to canonical Hub IDs (e.g.
 ``canvit/canvitb16-...``). Override via ``$CANVIT_REPO_ROOT`` to redirect
 every load — the value can be either an HF org prefix or a local path:
 
-    # Anonymous-review bundle: ship checkpoints in a local directory.
+    # Local checkpoint bundle: ship checkpoints in a directory tree.
     export CANVIT_REPO_ROOT="$(pwd)/canvit_checkpoints"
 
 Both shapes work transparently because ``PyTorchModelHubMixin.from_pretrained``

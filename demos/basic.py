@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """CanViT demo: canvas PCA visualization across two viewing trajectories.
 
 Two trajectories — overview-first and details-first — process the same scene

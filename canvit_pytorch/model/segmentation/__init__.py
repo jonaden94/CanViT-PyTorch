@@ -1,8 +1,8 @@
 """CanViT + SegmentationProbe head, in one ``nn.Module``.
 
 Construction goes through :meth:`CanViTForSemanticSegmentation.from_pretrained_with_probe`,
-which loads a pretrained CanViT and a separately-trained ``SegmentationProbe``
-from HF Hub and bundles them so callers don't manage the two halves
+which loads a pretrained CanViT and a separately trained ``SegmentationProbe``
+from repo IDs or local checkpoint directories so callers do not manage the two halves
 separately. Mirrors :class:`CanViTForImageClassification`'s API shape.
 """
 
@@ -93,7 +93,7 @@ class CanViTForSemanticSegmentation(
         canvas grid size of ``state``. Use :meth:`predict` to also bilinearly
         upsample logits to a target spatial resolution.
 
-        For backbone-only (no head), call ``self.canvit(...)`` directly.
+        For CanViT-only execution without the segmentation head, call ``self.canvit(...)`` directly.
         For head-only on a cached state, call ``self.head(spatial_hwd)`` directly.
         """
         out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)

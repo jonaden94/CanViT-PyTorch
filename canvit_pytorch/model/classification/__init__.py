@@ -1,4 +1,4 @@
-"""CanViT for image classification: CanViT + LN → Linear head, fused into one HF artifact."""
+"""CanViT for image classification."""
 
 import logging
 from pathlib import Path
@@ -73,7 +73,7 @@ class CanViTForImageClassification(
 
     Example::
 
-        # From HF (finetuned or pushed after fusion):
+        # From a fused checkpoint:
         clf = CanViTForImageClassification.from_pretrained("<org>/<repo>").eval()
 
         # From a pretrained CanViT + probe (fuses at construction time):
@@ -106,7 +106,7 @@ class CanViTForImageClassification(
 
     @property
     def local_dim(self) -> int:
-        """Embedding dimension of the backbone (and head input)."""
+        """Embedding dimension of the CanViT local stream and head input."""
         return self.canvit.local_dim
 
     @property
@@ -121,7 +121,7 @@ class CanViTForImageClassification(
     ) -> tuple[Tensor, RecurrentState]:
         """Returns (logits [B, n_classes], new_state).
 
-        For backbone-only (no head), call ``self.canvit(...)`` directly.
+        For CanViT-only execution without the classification head, call ``self.canvit(...)`` directly.
         For head-only on a cached CLS token, call ``self.head(self.norm(cls))``.
         """
         out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)

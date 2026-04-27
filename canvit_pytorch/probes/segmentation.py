@@ -1,8 +1,7 @@
 """Segmentation probe: LN -> Dropout -> BN -> Conv1x1.
 
-Architecture follows DINOv3. Loadable from HuggingFace Hub via
-PyTorchModelHubMixin (works standalone OR as a nested submodule of
-:class:`CanViTForSemanticSegmentation`).
+Architecture follows DINOv3. Loadable through ``PyTorchModelHubMixin`` from a
+repo ID or local checkpoint directory.
 
 Example::
 

@@ -1,8 +1,8 @@
 """Tests for SegmentationProbe + CanViTForSemanticSegmentation.
 
-Architecture-sanity only — no HF Hub network required. Hub-loading paths
-(``from_pretrained_with_probe``, ``from_pretrained``) are exercised by
-canvit-specialize' integration tests where the relevant HF artifacts live.
+Most tests here are architecture sanity checks that run without network access.
+The explicit ``network`` test covers published probe loading through
+``from_pretrained``.
 """
 
 import pytest
@@ -105,7 +105,7 @@ EXPECTED_CANVAS_DIM = 64  # = canvas_num_heads * canvas_head_dim (2 * 32)
 
 
 def _minimal_seg_model() -> CanViTForSemanticSegmentation:
-    """Construct a tiny CanViTForSemanticSegmentation for fast CPU tests.
+    """Construct a reduced CanViTForSemanticSegmentation for fast CPU tests.
 
     canvas_dim is computed (canvas_num_heads * canvas_head_dim, see CanViTConfig).
     """
@@ -159,8 +159,8 @@ class TestCanViTForSemanticSegmentation:
         assert logits.shape == (B, NUM_CLASSES, *target)
         assert new_state.canvas.shape == state.canvas.shape
 
-    def test_backbone_then_head(self, dummy_input):
-        """Verify callers can separate backbone + head steps: advance state via
+    def test_canvit_then_head(self, dummy_input):
+        """Verify callers can separate CanViT + head steps: advance state via
         `self.canvit(...)`, then apply the head directly via `self.head(spatial)`."""
         glimpse, vp = dummy_input
         seg = _minimal_seg_model().eval()
