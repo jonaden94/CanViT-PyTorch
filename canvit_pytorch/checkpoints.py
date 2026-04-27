@@ -1,6 +1,6 @@
-"""Repo-id construction for canvit-org models and probes.
+"""Repo-id construction for CanViT-owned models and probes.
 
-Single source of truth for the canvit-org HF prefix. Every canvit-org
+Single source of truth for the CanViT checkpoint root. Every CanViT-owned
 repo-id flows through :func:`resolve_canvit_repo`; third-party repos
 (``facebook/...``, etc.) stay as bare string literals.
 
