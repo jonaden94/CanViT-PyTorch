@@ -10,9 +10,11 @@ import torch
 from torch import Tensor, nn
 
 from canvit_pytorch.backbone import ViTBackbone, create_backbone
-from canvit_pytorch.model.base import CanViT
+from canvit_pytorch.model.base import CanViT, CanViTOutput, RecurrentState
 from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.rope import RoPE
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer
+from canvit_pytorch.viewpoint import Viewpoint
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +24,26 @@ class CanViTForPretrainingConfig(CanViTConfig):
     """Model configuration for CanViTForPretraining."""
 
     teacher_dim: int
+
+
+@dataclass
+class CanViTForPretrainingOutput:
+    """Output of ``CanViTForPretraining.forward``.
+
+    Bundles the base CanViT output with the prediction-head outputs so that
+    *all* gradient-relevant computation happens inside one ``forward`` call.
+    Critical under DDP: gradient sync only fires reliably for parameters whose
+    autograd path runs through the DDP-wrapped forward; calling the heads via
+    ``model.module.predict_*`` outside ``forward`` produces per-rank-only
+    gradients on the head parameters (CanViT issue: heads weren't averaged
+    across ranks, manifest as √N grad-norm scaling on head params only).
+    """
+
+    state: RecurrentState
+    local_patches: Tensor
+    vpe: Tensor | None
+    scene_pred: Tensor
+    cls_pred: Tensor
 
 
 def _init_ln_weight(ln: nn.LayerNorm, dim: int) -> None:
@@ -104,12 +126,20 @@ class CanViTForPretraining(CanViT):
         return model
 
     def predict_teacher_scene(self, canvas: Tensor) -> Tensor:
-        """Predict full-image teacher patch features from canvas spatial tokens."""
+        """Predict full-image teacher patch features from canvas spatial tokens.
+
+        Kept for callers that want the prediction without running a glimpse
+        forward (e.g. visualization of the initial-state scene, validation).
+        For training, prefer ``forward(...)`` which produces ``scene_pred``
+        inside the DDP-wrapped forward so the head's gradient is AllReduced.
+        """
         x = self.get_spatial(canvas)
         return self.scene_patches_head["proj"](self.scene_patches_head["norm"](x)).contiguous()
 
     def predict_scene_teacher_cls(self, global_cls: Tensor) -> Tensor:
         """Predict full-image teacher CLS from recurrent global CLS.
+
+        See ``predict_teacher_scene`` for the DDP caveat.
 
         Args:
             global_cls: [B, 1, local_dim] recurrent global CLS token
@@ -118,3 +148,40 @@ class CanViTForPretraining(CanViT):
         assert one == 1, f"Expected global_cls shape [B, 1, D], got {global_cls.shape}"
         x = global_cls[:, 0]
         return self.scene_cls_head["proj"](self.scene_cls_head["norm"](x)).contiguous()
+
+    def forward(  # type: ignore[override]
+        self,
+        *,
+        glimpse: Tensor,
+        state: RecurrentState,
+        viewpoint: Viewpoint,
+        canvas_grid_size: int | None = None,
+        canvas_rope: RoPE | None = None,
+    ) -> CanViTForPretrainingOutput:
+        """Glimpse forward + prediction heads in one call.
+
+        Running the heads INSIDE forward (rather than as separate
+        ``self.predict_*`` calls from the trainer) is what gets their
+        parameters into the autograd graph that DDP's Reducer instruments
+        each iteration. Without this, DDP's per-iteration bucket setup
+        misses the head params and their gradients are not AllReduced
+        across ranks — every rank's heads then drift independently and
+        rank 0's heads see effectively per-rank (un-averaged, ~√N larger)
+        gradient noise.
+        """
+        base: CanViTOutput = super().forward(
+            glimpse=glimpse,
+            state=state,
+            viewpoint=viewpoint,
+            canvas_grid_size=canvas_grid_size,
+            canvas_rope=canvas_rope,
+        )
+        scene_pred = self.predict_teacher_scene(base.state.canvas)
+        cls_pred = self.predict_scene_teacher_cls(base.state.recurrent_cls)
+        return CanViTForPretrainingOutput(
+            state=base.state,
+            local_patches=base.local_patches,
+            vpe=base.vpe,
+            scene_pred=scene_pred,
+            cls_pred=cls_pred,
+        )
