@@ -36,6 +36,11 @@ demo = [
     "transformers>=4.50.0",
     "tyro>=1.0.3",
 ]
+# Foveated patcher support: enables canvit_pytorch.patcher.FoveatedPatcher
+# (fovi-based RetinalTransform + KNNPartitioningPatchEmbedding).
+fovi = [
+    "fovi",
+]
 
 [dependency-groups]
 dev = [
@@ -48,6 +53,7 @@ dev = [
 
 [tool.uv.sources]
 dinov3-in1k-probes = { git = "https://github.com/m2b3/dinov3-in1k-probes.git" }
+fovi = { git = "https://github.com/jonaden94/fovi.git" }
 
 [tool.pytest.ini_options]
 testpaths = ["canvit_pytorch", "tests"]

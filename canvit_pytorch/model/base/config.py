@@ -1,7 +1,9 @@
 """CanViT configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+from canvit_pytorch.patcher import FoveatedPatcherConfig, PatcherName
 
 
 @dataclass
@@ -18,6 +20,11 @@ class CanViTConfig:
     canvas_update_mode: Literal["additive", "convex"] = "additive"
     canvas_proj_mode: Literal["asymmetric", "full"] = "asymmetric"
     gate_bias_init: float | None = None
+    # Patcher: "uniform" (default, current behavior) or "foveated" (fovi-based,
+    # requires the canvit-pytorch[fovi] extra). Foveated geometry params live
+    # in `foveated_patcher` and are ignored when `patcher_name == "uniform"`.
+    patcher_name: PatcherName = "uniform"
+    foveated_patcher: FoveatedPatcherConfig = field(default_factory=FoveatedPatcherConfig)
 
     def __post_init__(self) -> None:
         is_convex = self.canvas_update_mode == "convex"

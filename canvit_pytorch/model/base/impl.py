@@ -15,8 +15,9 @@ from canvit_pytorch.attention import (
     CanvasWriteAttentionFull,
 )
 from canvit_pytorch.backbone.vit import ViTBackbone
-from canvit_pytorch.coords import canvas_coords_for_glimpse, grid_coords
+from canvit_pytorch.coords import grid_coords
 from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.patcher import Patcher, create_patcher
 from canvit_pytorch.rope import RoPE, compute_rope, make_rope_periods
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
 from canvit_pytorch.vpe import VPEEncoder
@@ -121,10 +122,22 @@ class CanViT(nn.Module):
         *,
         backbone: ViTBackbone,
         cfg: CanViTConfig,
+        patcher: Patcher | None = None,
     ) -> None:
         super().__init__()
         self.cfg = cfg
         self.backbone = backbone
+
+        # Patcher dispatch: "uniform" delegates to backbone.patch_embed (backward
+        # compatible — same params, same state_dict keys); "foveated" uses fovi.
+        # Caller may pass a pre-built patcher to override the registry default.
+        if patcher is None:
+            patcher = create_patcher(
+                cfg.patcher_name,
+                backbone=backbone,
+                foveated_config=cfg.foveated_patcher,
+            )
+        self.patcher = patcher
 
         n_blocks = backbone.n_blocks
         local_dim = backbone.embed_dim
@@ -209,14 +222,6 @@ class CanViT(nn.Module):
             assert canvas_grid_size * canvas_grid_size == n_spatial
         return grid_coords(H=canvas_grid_size, W=canvas_grid_size, device=canvas.device).flatten(0, 1)
 
-    def _compute_local_positions(self, viewpoint: Viewpoint, glimpse_grid_size: int) -> Tensor:
-        return canvas_coords_for_glimpse(
-            center=viewpoint.centers,
-            scale=viewpoint.scales,
-            H=glimpse_grid_size,
-            W=glimpse_grid_size,
-        ).flatten(1, 2)
-
     def forward(
         self,
         *,
@@ -230,12 +235,13 @@ class CanViT(nn.Module):
         recurrent_cls = state.recurrent_cls
         canvas = state.canvas
 
-        patches, H, W = self.backbone.patch_embed(glimpse)
-        glimpse_grid_size = H
-        assert H == W, f"Expected square grid, got H={H}, W={W}"
+        # Patcher returns flat [B, N, D] patches and per-patch scene positions
+        # in [-1, 1]^2 (row, col). N is fixed per patcher; the rest of forward
+        # is dimension-agnostic in N.
+        patches, local_pos = self.patcher(glimpse, viewpoint)
+        n_patches = patches.shape[1]
 
         n_regs = self.cfg.n_backbone_registers
-        n_patches = H * W
         registers = self.backbone_registers.expand(B, -1, -1)
 
         vpe_tok: Tensor | None = None
@@ -253,8 +259,6 @@ class CanViT(nn.Module):
 
         n_prefix = tokens.n_prefix
         assert local.shape[1] == n_prefix + n_patches
-
-        local_pos = self._compute_local_positions(viewpoint, glimpse_grid_size)
 
         device = glimpse.device
         rope_base = self.backbone.rope_base

@@ -14,6 +14,13 @@ from canvit_pytorch.model import (
     RecurrentState,
     fuse_probe,
 )
+from canvit_pytorch.patcher import (
+    FoveatedPatcherConfig,
+    Patcher,
+    PatcherName,
+    UniformPatcher,
+    create_patcher,
+)
 from canvit_pytorch.probes import SegmentationProbe
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer, PositionAwareStandardizer
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
@@ -31,14 +38,19 @@ __all__ = [
     "CanViTForSemanticSegmentation",
     "CANVIT_REPO_ROOT",
     "CanViTOutput",
+    "FoveatedPatcherConfig",
+    "Patcher",
+    "PatcherName",
     "PatchStandardizer",
     "PositionAwareStandardizer",
     "RecurrentState",
     "SegmentationProbe",
+    "UniformPatcher",
     "VPEEncoder",
     "Viewpoint",
     "ViTBackbone",
     "create_backbone",
+    "create_patcher",
     "fuse_probe",
     "resolve_canvit_repo",
     "sample_at_viewpoint",
