@@ -1,9 +1,12 @@
 """Patcher base class.
 
-A Patcher maps a pixel glimpse + viewpoint to (patch tokens, scene positions).
+A Patcher maps a (full) image + viewpoint to (patch tokens, scene positions).
 Two implementations:
-    - UniformPatcher: existing uniform-grid behavior (delegates to backbone.patch_embed)
-    - FoveatedPatcher: foveated sampling via fovi.RetinalTransform + KNNPartitioningPatchEmbedding
+    - :class:`UniformPatcher`: existing uniform-grid behavior — internally crops
+      a glimpse via ``sample_at_viewpoint`` then patchifies with the backbone.
+    - :class:`FoveatedPatcher`: foveated sampling via fovi's RetinalTransform
+      + KNNPartitioningPatchEmbedding; operates on the full image, anchored at
+      ``viewpoint.centers`` (``scale`` is ignored).
 """
 
 from torch import Tensor, nn
@@ -12,19 +15,22 @@ from canvit_pytorch.viewpoint import Viewpoint
 
 
 class Patcher(nn.Module):
-    """Maps a pixel glimpse and viewpoint to patch tokens and scene-relative positions.
+    """Maps a full image and viewpoint to patch tokens and scene-relative positions.
 
     Contract:
-        forward(glimpse, viewpoint) -> (patches, scene_positions)
-            glimpse: [B, 3, gpx, gpx] pixel image around the viewpoint
-            viewpoint: Viewpoint(centers=[B, 2], scales=[B]) in scene-relative coords
+        forward(image, viewpoint) -> (patches, scene_positions)
+            image: [B, 3, H, W] pixel image (full scene)
+            viewpoint: Viewpoint(centers=[B, 2], scales=[B]) in scene-relative
+                       coords. Uniform uses both; foveated uses only ``centers``.
             patches: [B, N, embed_dim]
-            scene_positions: [B, N, 2] in scene-relative [-1, 1]^2, (row, col)
+            scene_positions: [B, N, 2] in scene-relative [-1, 1]^2, (row, col).
+                             For foveated, may extend outside [-1, 1] when the
+                             fixation is near an image edge.
 
     N is fixed per patcher instance but may differ between implementations.
     """
 
     embed_dim: int
 
-    def forward(self, glimpse: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
+    def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
         raise NotImplementedError

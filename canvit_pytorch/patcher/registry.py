@@ -20,6 +20,7 @@ def create_patcher(
     name: PatcherName,
     *,
     backbone: ViTBackbone,
+    glimpse_size_px: int | None = None,
     foveated_config: FoveatedPatcherConfig | None = None,
     device: torch.device | str = "cpu",
 ) -> Patcher:
@@ -32,13 +33,16 @@ def create_patcher(
         backbone: the constructed ViT backbone. The uniform patcher references
             ``backbone.patch_embed``; the foveated patcher only reads
             ``backbone.embed_dim``.
+        glimpse_size_px: side length (in pixels) of the crop the uniform
+            patcher takes from the full image. Ignored by the foveated patcher
+            (which operates on the full image).
         foveated_config: only consulted for ``name="foveated"``. Defaults to
             ``FoveatedPatcherConfig()`` if ``None``.
         device: target device for fovi's sampling state. Only consulted for
             ``name="foveated"``.
     """
     if name == "uniform":
-        return UniformPatcher(backbone=backbone)
+        return UniformPatcher(backbone=backbone, glimpse_size_px=glimpse_size_px)
     if name == "foveated":
         # Lazy import — fovi is an optional dependency.
         from canvit_pytorch.patcher.foveated import FoveatedPatcher
@@ -47,9 +51,9 @@ def create_patcher(
         patcher = FoveatedPatcher(cfg, embed_dim=backbone.embed_dim, device=device)
         log.info(
             "Created foveated patcher: fov=%.1f cmf_a=%.4f resolution=%d "
-            "fixation_size=%d cart_patch_size=%d n_patches=%d",
+            "fixation_size=%d cart_patch_size=%d sampler=%s n_patches=%d",
             cfg.fov, cfg.cmf_a, cfg.resolution, cfg.fixation_size,
-            cfg.cart_patch_size, patcher.n_patches,
+            cfg.cart_patch_size, cfg.sampler, patcher.n_patches,
         )
         return patcher
     raise ValueError(f"Unknown patcher: {name!r}. Available: 'uniform', 'foveated'")

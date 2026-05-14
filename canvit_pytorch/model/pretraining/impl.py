@@ -62,10 +62,11 @@ class CanViTForPretraining(CanViT):
         *,
         backbone: ViTBackbone,
         cfg: CanViTForPretrainingConfig,
+        glimpse_size_px: int | None = None,
         backbone_name: str,
         canvas_patch_grid_sizes: list[int],
     ) -> None:
-        super().__init__(backbone=backbone, cfg=cfg)
+        super().__init__(backbone=backbone, cfg=cfg, glimpse_size_px=glimpse_size_px)
 
         canvas_dim = cfg.canvas_dim
         local_dim = backbone.embed_dim
@@ -115,9 +116,15 @@ class CanViTForPretraining(CanViT):
         log.info("Loading checkpoint from %s (map_location=%s)", path, map_location)
         ckpt = torch.load(path, map_location=map_location, weights_only=False)
         log.info("backbone_name=%s, canvas_patch_grid_sizes=%s", ckpt["backbone_name"], ckpt["canvas_patch_grid_sizes"])
+        backbone = create_backbone(ckpt["backbone_name"])
+        # Fall back to a sensible default for legacy checkpoints that don't
+        # serialize ``glimpse_size_px``: 8 × patch_size_px (matches the old
+        # ``glimpse_grid_size=8`` default used during pretraining).
+        glimpse_size_px = int(ckpt.get("glimpse_size_px") or 8 * backbone.patch_size_px)
         model = cls(
-            backbone=create_backbone(ckpt["backbone_name"]),
+            backbone=backbone,
             cfg=CanViTForPretrainingConfig(**ckpt["model_config"]),
+            glimpse_size_px=glimpse_size_px,
             backbone_name=ckpt["backbone_name"],
             canvas_patch_grid_sizes=ckpt["canvas_patch_grid_sizes"],
         )
@@ -152,13 +159,13 @@ class CanViTForPretraining(CanViT):
     def forward(  # type: ignore[override]
         self,
         *,
-        glimpse: Tensor,
+        image: Tensor,
         state: RecurrentState,
         viewpoint: Viewpoint,
         canvas_grid_size: int | None = None,
         canvas_rope: RoPE | None = None,
     ) -> CanViTForPretrainingOutput:
-        """Glimpse forward + prediction heads in one call.
+        """Image forward + prediction heads in one call.
 
         Running the heads INSIDE forward (rather than as separate
         ``self.predict_*`` calls from the trainer) is what gets their
@@ -170,7 +177,7 @@ class CanViTForPretraining(CanViT):
         gradient noise.
         """
         base: CanViTOutput = super().forward(
-            glimpse=glimpse,
+            image=image,
             state=state,
             viewpoint=viewpoint,
             canvas_grid_size=canvas_grid_size,

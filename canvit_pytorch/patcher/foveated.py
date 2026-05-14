@@ -1,13 +1,21 @@
 """Foveated patcher: ``fovi`` RetinalTransform + KNNPartitioningPatchEmbedding.
 
-Treats the pre-cropped square glimpse as a fixation window centered on
-``fix_loc=(0.5, 0.5)`` and reads it through fovi's foveated sensor + KNN-based
-patch embedding. Per-patch positions in the visual-field frame are exposed by
-fovi at ``KNNPartitioningPatchEmbedding.out_coords.cartesian_rowcol`` in
-``[-1, 1]^2`` ``(row, col)``; they map to scene-relative coords via the
-same formula the uniform patcher uses for its grid:
+Operates on the **full image** (not a pre-cropped glimpse). Foveation is
+anchored at the model's current fixation point, which lives in
+``viewpoint.centers`` ((row, col) in ``[-1, 1]^2``, image-coord frame). The
+``viewpoint.scales`` field is ignored — the fixation always covers the entire
+image at scale 1.
 
-    scene_pos = viewpoint.center + viewpoint.scale * visual_field_rowcol
+Per-patch positions in the visual-field frame are exposed by fovi at
+``KNNPartitioningPatchEmbedding.out_coords.cartesian_rowcol`` in ``[-1, 1]^2``
+(row, col); they map to image-frame scene positions as
+
+    scene_pos = viewpoint.centers + (fix_size / image_size) * vf_rowcol
+
+With ``fix_size == image_size`` (full-image foveation) this reduces to
+``scene_pos = viewpoint.centers + vf_rowcol``. Fixations near the edge produce
+patches with ``|scene_pos| > 1`` — these encode out-of-image patches, which
+RoPE handles gracefully (the model learns to ignore them implicitly).
 
 fovi's modules keep their sampling state as plain attributes rather than
 ``nn.Module`` buffers. We override ``_apply`` so that the usual
@@ -33,19 +41,24 @@ from canvit_pytorch.viewpoint import Viewpoint
 class FoveatedPatcherConfig:
     """Configuration for the foveated patcher.
 
-    Defaults match fovi's production ``config/fovi-dinov3.yaml`` (fov=16°,
-    cmf_a≈2.79, isotropic / grid_nn / geodesic) at 256-px fixation and 64-px
-    foveated grid.
+    Defaults track ``fovi/notebooks/explore_foveated_config.ipynb`` (the
+    "real peripheral retina" regime: wide fov, mild cmf, ``pooling`` sampler).
+    ``fixation_size`` matches the image side length used in training
+    (``scene_resolution=512`` in the pretrain config). At forward time the
+    fixation always covers the full image, so the relationship between
+    ``cfg.fixation_size`` (fovi's reference) and the actual image size used
+    determines whether the foveation pattern is correctly calibrated in
+    pixels — keep them in sync.
     """
 
-    fov: float = 16.0
-    cmf_a: float = 2.785765
-    resolution: int = 64
-    fixation_size: int = 256
+    fov: float = 180.0
+    cmf_a: float = 0.5
+    resolution: int = 36
+    fixation_size: int = 512
     style: str = "isotropic"
-    sampler: str = "grid_nn"
-    cart_patch_size: int = 8
-    sample_cortex: Literal["geodesic"] | bool = "geodesic"
+    sampler: str = "pooling"
+    cart_patch_size: int = 6
+    sample_cortex: Literal["geodesic"] | bool = True
     arch_flag: str = ""
     ref_frame_side_length: int | None = None
     max_coord_val: float | Literal["auto"] = "auto"
@@ -90,8 +103,11 @@ class FoveatedPatcher(Patcher):
         self.embed_dim = embed_dim
         dev = torch.device(device) if isinstance(device, str) else device
 
-        # Retinal sampling: the entire glimpse is the fixation window, so
-        # start_res / fixation_size both equal the foveated glimpse size.
+        # Retinal sampling: ``start_res`` / ``fixation_size`` set fovi's
+        # reference at construction time; at forward time we pass
+        # ``fixation_size=image_H`` so the fixation always covers the full
+        # image (the caller is expected to keep ``cfg.fixation_size`` in sync
+        # with the image side length used at runtime).
         self.retina = RetinalTransform(
             resolution=cfg.resolution,
             start_res=cfg.fixation_size,
@@ -146,11 +162,17 @@ class FoveatedPatcher(Patcher):
     def _migrate_fovi_state(self, fn: Callable[[Tensor], Tensor]) -> None:
         """Apply ``fn`` to fovi tensors held as plain Python attributes.
 
-        ``RetinalTransform`` / ``GridSampler`` / ``SamplingCoords`` / KNN
-        layers stash sampling grids, KNN indices, reference coords, etc. as
-        ordinary attributes (not ``register_buffer``), so ``nn.Module._apply``
-        does not migrate them when ``.to(device)`` is called. Walk those
-        objects' ``__dict__`` and re-bind any Tensor attribute through ``fn``.
+        ``RetinalTransform`` / ``GridSampler`` / ``KNNGridSampler`` /
+        ``SamplingCoords`` / KNN layers stash sampling grids, KNN indices,
+        reference coords, etc. as ordinary attributes (not
+        ``register_buffer``), so ``nn.Module._apply`` does not migrate them
+        when ``.to(device)`` is called. Walk those objects' ``__dict__`` and
+        re-bind any Tensor attribute through ``fn``.
+
+        Also patches each object's stored ``device`` attribute (used by some
+        fovi forwards, e.g. ``KNNGridSampler.forward``'s ``img.to(self.device)``)
+        so they don't drag tensors back to the original construction device
+        after we have already moved everything.
         """
 
         def migrate(obj: Any) -> None:
@@ -178,37 +200,59 @@ class FoveatedPatcher(Patcher):
 
         sampler = self.retina.sampler
         # Order matters less than coverage; SamplingCoords lives both on the
-        # sampler and on the KNN patcher's in_coords / out_coords.
-        for obj in (
+        # sampler and on the KNN patcher's in_coords / out_coords. With
+        # sampler="pooling" the sampler is a KNNGridSampler which carries
+        # additional `highres_coords` and a `pooler` submodule worth walking.
+        fovi_objs = (
             self.retina,
             sampler,
             getattr(sampler, "coords", None),
+            getattr(sampler, "highres_coords", None),
+            getattr(sampler, "pooler", None),
             self.kpe,
             getattr(self.kpe, "in_coords", None),
             getattr(self.kpe, "out_coords", None),
-        ):
+        )
+        for obj in fovi_objs:
             migrate(obj)
+
+        # Infer the target device from a known buffer that just got migrated,
+        # and patch each fovi object's stored ``device`` so its forward
+        # doesn't move incoming tensors back to the construction device.
+        target_device = self._patch_rowcol.device
+        for obj in fovi_objs:
+            if obj is None:
+                continue
+            if hasattr(obj, "device"):
+                try:
+                    setattr(obj, "device", target_device)
+                except Exception:
+                    pass
 
     @property
     def fixation_size(self) -> int:
         return self.cfg.fixation_size
 
-    def forward(self, glimpse: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
-        B = glimpse.shape[0]
-        gpx = glimpse.shape[-1]
-        # RetinalTransform expects fix_loc as (row, col) in [0, 1]; the whole
-        # crop is the fixation window, so fix_loc=(0.5, 0.5) and
-        # fixation_size=gpx. We pass a per-batch tensor to avoid the
-        # constructor's default scalar path.
-        fix_loc = glimpse.new_full((B, 2), 0.5, dtype=torch.float32)
-        # `fixation_size` accepts an int or per-batch array
-        sensor = self.retina(glimpse, fix_loc=fix_loc, fixation_size=gpx)  # [B, 3, N_samples]
+    def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
+        B, _, H, W = image.shape
+        assert H == W, f"FoveatedPatcher expects a square image; got H={H}, W={W}"
+
+        # fovi's ``fix_loc`` is (row, col) in [0, 1] normalized image coords.
+        # ``viewpoint.centers`` is (row, col) in [-1, 1]; rescale.
+        fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
+        # Full-image foveation: the fixation window equals the image.
+        sensor = self.retina(image, fix_loc=fix_loc, fixation_size=H)  # [B, 3, N_samples]
         patches = self.kpe(sensor)  # [B, N_patches, embed_dim]
 
-        # Map visual-field positions to scene-relative coords.
-        rowcol = self._patch_rowcol.to(dtype=torch.float32)  # [N, 2]
+        # Scene positions for each patch, image-coord frame [-1, 1]^2.
+        # When fix_size == image_size the conversion factor between
+        # visual-field rowcol and image rowcol is 1.0; patches near the edge
+        # may land at |scene_pos| > 1 (out-of-image), which is intentional —
+        # RoPE handles it and the model learns to ignore those patches.
+        rowcol = self._patch_rowcol.to(torch.float32)  # [N, 2]
+        fix_size_norm = float(H) / float(H)  # = 1.0; explicit for clarity
         scene_pos = (
             viewpoint.centers.view(B, 1, 2).to(torch.float32)
-            + viewpoint.scales.view(B, 1, 1).to(torch.float32) * rowcol.view(1, -1, 2)
+            + fix_size_norm * rowcol.view(1, -1, 2)
         )  # [B, N, 2]
         return patches, scene_pos

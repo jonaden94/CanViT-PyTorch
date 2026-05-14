@@ -19,7 +19,7 @@ from canvit_pytorch.coords import grid_coords
 from canvit_pytorch.model.base.config import CanViTConfig
 from canvit_pytorch.patcher import Patcher, create_patcher
 from canvit_pytorch.rope import RoPE, compute_rope, make_rope_periods
-from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
+from canvit_pytorch.viewpoint import Viewpoint
 from canvit_pytorch.vpe import VPEEncoder
 
 T = TypeVar("T")
@@ -122,11 +122,13 @@ class CanViT(nn.Module):
         *,
         backbone: ViTBackbone,
         cfg: CanViTConfig,
+        glimpse_size_px: int | None = None,
         patcher: Patcher | None = None,
     ) -> None:
         super().__init__()
         self.cfg = cfg
         self.backbone = backbone
+        self.glimpse_size_px = glimpse_size_px
 
         # Patcher dispatch: "uniform" delegates to backbone.patch_embed (backward
         # compatible — same params, same state_dict keys); "foveated" uses fovi.
@@ -135,6 +137,7 @@ class CanViT(nn.Module):
             patcher = create_patcher(
                 cfg.patcher_name,
                 backbone=backbone,
+                glimpse_size_px=glimpse_size_px,
                 foveated_config=cfg.foveated_patcher,
             )
         self.patcher = patcher
@@ -225,20 +228,22 @@ class CanViT(nn.Module):
     def forward(
         self,
         *,
-        glimpse: Tensor,
+        image: Tensor,
         state: RecurrentState,
         viewpoint: Viewpoint,
         canvas_grid_size: int | None = None,
         canvas_rope: RoPE | None = None,
     ) -> CanViTOutput:
-        B = glimpse.shape[0]
+        B = image.shape[0]
         recurrent_cls = state.recurrent_cls
         canvas = state.canvas
 
-        # Patcher returns flat [B, N, D] patches and per-patch scene positions
-        # in [-1, 1]^2 (row, col). N is fixed per patcher; the rest of forward
-        # is dimension-agnostic in N.
-        patches, local_pos = self.patcher(glimpse, viewpoint)
+        # Patcher consumes the full image (uniform: crops internally at
+        # viewpoint; foveated: foveates around viewpoint.centers) and returns
+        # flat [B, N, D] patches plus per-patch scene positions in [-1, 1]^2
+        # (row, col). N is fixed per patcher; the rest of forward is
+        # dimension-agnostic in N.
+        patches, local_pos = self.patcher(image, viewpoint)
         n_patches = patches.shape[1]
 
         n_regs = self.cfg.n_backbone_registers
@@ -260,7 +265,7 @@ class CanViT(nn.Module):
         n_prefix = tokens.n_prefix
         assert local.shape[1] == n_prefix + n_patches
 
-        device = glimpse.device
+        device = image.device
         rope_base = self.backbone.rope_base
         backbone_periods = make_rope_periods(head_dim=self.backbone.head_dim, base=rope_base, device=device)
         canvas_periods = make_rope_periods(head_dim=self.cfg.canvas_head_dim, base=rope_base, device=device)
@@ -313,10 +318,9 @@ class CanViT(nn.Module):
         *,
         image: Tensor,
         viewpoints: list[Viewpoint],
-        glimpse_size_px: int,
         canvas_grid_size: int,
         init_fn: Callable[[RecurrentState], T],
-        step_fn: Callable[[T, CanViTOutput, Viewpoint, Tensor], T],
+        step_fn: Callable[[T, CanViTOutput, Viewpoint], T],
         state: RecurrentState | None = None,
     ) -> tuple[T, RecurrentState]:
         assert len(viewpoints) > 0
@@ -328,12 +332,9 @@ class CanViT(nn.Module):
         acc = init_fn(state)
 
         for vp in viewpoints:
-            glimpse = sample_at_viewpoint(
-                spatial=image, viewpoint=vp, glimpse_size_px=glimpse_size_px
-            )
-            out = self.forward(glimpse=glimpse, state=state, viewpoint=vp)
+            out = self.forward(image=image, state=state, viewpoint=vp)
             state = out.state
-            acc = step_fn(acc, out, vp, glimpse)
+            acc = step_fn(acc, out, vp)
 
         return acc, state
 

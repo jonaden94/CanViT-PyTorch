@@ -23,7 +23,6 @@ from canvit_pytorch import (
     Viewpoint,
     create_backbone,
     create_patcher,
-    sample_at_viewpoint,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -68,10 +67,10 @@ def test_forward_shapes(foveated_patcher):
     B = 2
     gpx = SMALL_FOVEATED_CFG.fixation_size
     embed_dim = foveated_patcher.embed_dim
-    glimpse = torch.randn(B, 3, gpx, gpx)
-    vp = Viewpoint.full_scene(batch_size=B, device=glimpse.device)
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     with torch.inference_mode():
-        patches, scene_pos = foveated_patcher(glimpse, vp)
+        patches, scene_pos = foveated_patcher(image, vp)
     N = foveated_patcher.n_patches
     assert patches.shape == (B, N, embed_dim)
     assert scene_pos.shape == (B, N, 2)
@@ -87,33 +86,34 @@ def test_foveal_patch_at_origin(foveated_patcher):
 
 
 def test_scene_positions_full_scene(foveated_patcher):
-    """Full-scene viewpoint (centers=0, scales=1) -> scene_pos == rowcol."""
+    """Full-scene viewpoint (centers=0) -> scene_pos == rowcol (foveation
+    covers full image, viewpoint.scales is ignored)."""
     B = 3
     gpx = SMALL_FOVEATED_CFG.fixation_size
-    glimpse = torch.randn(B, 3, gpx, gpx)
-    vp = Viewpoint.full_scene(batch_size=B, device=glimpse.device)
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     with torch.inference_mode():
-        _, scene_pos = foveated_patcher(glimpse, vp)
+        _, scene_pos = foveated_patcher(image, vp)
     rowcol = foveated_patcher._patch_rowcol
     for b in range(B):
         assert torch.allclose(scene_pos[b], rowcol, atol=1e-6)
 
 
-def test_scene_positions_translated_and_scaled(foveated_patcher):
-    """Off-center viewpoint maps positions by center + scale * rowcol."""
+def test_scene_positions_translated(foveated_patcher):
+    """Off-center viewpoint shifts scene_pos by viewpoint.centers
+    (scale is ignored in the new full-image foveation contract).
+    Edge fixations may produce |scene_pos| > 1 — out-of-image patches."""
     B = 1
     gpx = SMALL_FOVEATED_CFG.fixation_size
-    glimpse = torch.randn(B, 3, gpx, gpx)
+    image = torch.randn(B, 3, gpx, gpx)
     centers = torch.tensor([[0.3, -0.2]], dtype=torch.float32)
-    scales = torch.tensor([0.4], dtype=torch.float32)
+    scales = torch.tensor([0.4], dtype=torch.float32)  # ignored
     vp = Viewpoint(centers=centers, scales=scales)
     with torch.inference_mode():
-        _, scene_pos = foveated_patcher(glimpse, vp)
+        _, scene_pos = foveated_patcher(image, vp)
     rowcol = foveated_patcher._patch_rowcol
-    expected = centers.view(1, 1, 2) + scales.view(1, 1, 1) * rowcol.view(1, -1, 2)
+    expected = centers.view(1, 1, 2) + rowcol.view(1, -1, 2)
     assert torch.allclose(scene_pos, expected, atol=1e-6)
-    # Sanity-check: glimpse window fully inside scene -> all positions in [-1, 1]
-    assert scene_pos.abs().max() <= 1.0
 
 
 def test_canvit_end_to_end_foveated(backbone):
@@ -126,12 +126,11 @@ def test_canvit_end_to_end_foveated(backbone):
     B = 2
     gpx = SMALL_FOVEATED_CFG.fixation_size
     canvas_grid = 16
-    scene = torch.randn(B, 3, gpx * 2, gpx * 2)
-    vp = Viewpoint.full_scene(batch_size=B, device=scene.device)
-    glimpse = sample_at_viewpoint(spatial=scene, viewpoint=vp, glimpse_size_px=gpx)
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     state = model.init_state(batch_size=B, canvas_grid_size=canvas_grid)
     with torch.inference_mode():
-        out = model(glimpse=glimpse, state=state, viewpoint=vp)
+        out = model(image=image, state=state, viewpoint=vp)
     assert out.local_patches.shape[0] == B
     assert out.local_patches.shape[1] == model.patcher.n_patches
     assert out.local_patches.shape[2] == backbone.embed_dim
