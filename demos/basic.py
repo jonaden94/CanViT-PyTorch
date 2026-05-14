@@ -83,7 +83,7 @@ def run_trajectory(
             scales=torch.tensor([step.scale], device=image.device),
         )
         glimpse = sample_at_viewpoint(spatial=image, viewpoint=vp, glimpse_size_px=glimpse_px)
-        out = model(glimpse=glimpse, state=state, viewpoint=vp)
+        out = model(image=glimpse, state=state, viewpoint=vp)
         state = out.state
 
         canvases.append(model.get_spatial(state.canvas).squeeze(0).cpu().float())

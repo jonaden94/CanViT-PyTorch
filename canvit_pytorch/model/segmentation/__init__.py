@@ -44,7 +44,7 @@ class CanViTForSemanticSegmentation(
         ).eval()
 
         state = seg.init_state(batch_size=B, canvas_grid_size=32)
-        logits, state = seg(glimpse=glimpse, state=state, viewpoint=vp)
+        logits, state = seg(image=glimpse, state=state, viewpoint=vp)
         # logits: [B, num_classes, 32, 32]
     """
 
@@ -96,7 +96,7 @@ class CanViTForSemanticSegmentation(
         For CanViT-only execution without the segmentation head, call ``self.canvit(...)`` directly.
         For head-only on a cached state, call ``self.head(spatial_hwd)`` directly.
         """
-        out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        out = self.canvit(image=glimpse, state=state, viewpoint=viewpoint)
         spatial = self.canvit.get_spatial(out.state.canvas)  # [B, G*G, D]
         B, n_spatial, D = spatial.shape
         canvas_grid = int(n_spatial ** 0.5)
@@ -118,7 +118,7 @@ class CanViTForSemanticSegmentation(
 
         Returns ``(logits [B, num_classes, *target_size], new_state)``.
         """
-        logits, new_state = self(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        logits, new_state = self(image=glimpse, state=state, viewpoint=viewpoint)
         return F.interpolate(logits, size=target_size, mode="bilinear", align_corners=False), new_state
 
     @classmethod

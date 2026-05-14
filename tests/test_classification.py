@@ -44,7 +44,7 @@ class TestFromPretrainedWithProbe:
         glimpse, vp = dummy_input
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
-            logits, new_state = clf(glimpse=glimpse, state=state, viewpoint=vp)
+            logits, new_state = clf(image=glimpse, state=state, viewpoint=vp)
         assert logits.shape == (B, 1000)
         assert new_state.recurrent_cls.shape == (B, 1, clf.local_dim)
 
@@ -52,8 +52,8 @@ class TestFromPretrainedWithProbe:
         glimpse, vp = dummy_input
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
-            logits_combined, _ = clf(glimpse=glimpse, state=state, viewpoint=vp)
-            out = clf.canvit(glimpse=glimpse, state=state, viewpoint=vp)
+            logits_combined, _ = clf(image=glimpse, state=state, viewpoint=vp)
+            out = clf.canvit(image=glimpse, state=state, viewpoint=vp)
             logits_split = clf.head(clf.norm(out.state.recurrent_cls[:, 0].float()))
         assert (logits_combined - logits_split).abs().max() < 1e-6
 
@@ -72,8 +72,8 @@ class TestFromPretrainedWithProbe:
             state_fused = clf.canvit.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
             state_unfused = pretrained.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
 
-            out_fused = clf.canvit(glimpse=glimpse, state=state_fused, viewpoint=vp)
-            out_unfused = pretrained(glimpse=glimpse, state=state_unfused, viewpoint=vp)
+            out_fused = clf.canvit(image=glimpse, state=state_fused, viewpoint=vp)
+            out_unfused = pretrained(image=glimpse, state=state_unfused, viewpoint=vp)
 
             # Unfused: norm → proj → destandardize → probe
             rcls = out_unfused.state.recurrent_cls
@@ -100,7 +100,7 @@ class TestFromPretrained:
         glimpse, vp = dummy_input
         state = clf.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
-            logits, _ = clf(glimpse=glimpse, state=state, viewpoint=vp)
+            logits, _ = clf(image=glimpse, state=state, viewpoint=vp)
         assert logits.shape == (B, 1000)
 
     def test_properties(self, clf):
@@ -123,7 +123,7 @@ class TestEndToEnd:
 
         with torch.inference_mode():
             state = clf.init_state(batch_size=1, canvas_grid_size=CANVAS_GRID)
-            logits, _ = clf(glimpse=glimpse, state=state, viewpoint=vp)
+            logits, _ = clf(image=glimpse, state=state, viewpoint=vp)
         return logits.argmax(dim=-1).item()
 
     def test_fused_probe_classifies_cat(self):

@@ -64,7 +64,7 @@ def classify(clf: CanViTForImageClassification, image: torch.Tensor) -> None:
                 scales=torch.tensor([s], device=image.device),
             )
             glimpse = sample_at_viewpoint(spatial=image, viewpoint=vp, glimpse_size_px=GLIMPSE_PX)
-            logits, state = clf(glimpse=glimpse, state=state, viewpoint=vp)
+            logits, state = clf(image=glimpse, state=state, viewpoint=vp)
 
             probs = torch.softmax(logits, dim=-1)
             top = probs[0].topk(1)

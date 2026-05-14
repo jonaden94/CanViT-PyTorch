@@ -84,7 +84,7 @@ class CanViTForImageClassification(
 
         # Both have the same forward:
         state = clf.init_state(batch_size=B, canvas_grid_size=32)
-        logits, state = clf(glimpse=glimpse, state=state, viewpoint=vp)
+        logits, state = clf(image=glimpse, state=state, viewpoint=vp)
     """
 
     def __init__(
@@ -124,7 +124,7 @@ class CanViTForImageClassification(
         For CanViT-only execution without the classification head, call ``self.canvit(...)`` directly.
         For head-only on a cached CLS token, call ``self.head(self.norm(cls))``.
         """
-        out = self.canvit(glimpse=glimpse, state=state, viewpoint=viewpoint)
+        out = self.canvit(image=glimpse, state=state, viewpoint=viewpoint)
         cls = out.state.recurrent_cls[:, 0].float()
         return self.head(self.norm(cls)), out.state
 
