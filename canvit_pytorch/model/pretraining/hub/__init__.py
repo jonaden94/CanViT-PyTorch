@@ -12,6 +12,7 @@ from safetensors.torch import save_file
 
 from canvit_pytorch.backbone import create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
+from canvit_pytorch.patcher import FoveatedPatcherConfig
 
 from ..impl import CanViTForPretraining, CanViTForPretrainingConfig
 
@@ -130,6 +131,18 @@ class CanViTForPretrainingHFHub(
         model_config: dict[str, Any],
         canvas_patch_grid_sizes: list[int],
     ):
+        # Coerce nested foveated_patcher dict → dataclass for foveated
+        # checkpoints. upload_to_hf serializes the config via asdict (flattens
+        # nested dataclasses to dicts), but CanViTForPretrainingConfig(
+        # **model_config) does no recursive coercion, so FoveatedPatcher would
+        # receive a dict. Strictly gated on patcher_name == "foveated" so the
+        # uniform path is byte-for-byte unaffected.
+        if (model_config.get("patcher_name") == "foveated"
+                and isinstance(model_config.get("foveated_patcher"), dict)):
+            model_config = {
+                **model_config,
+                "foveated_patcher": FoveatedPatcherConfig(**model_config["foveated_patcher"]),
+            }
         super().__init__(
             backbone=create_backbone(backbone_name),
             cfg=CanViTForPretrainingConfig(**model_config),
