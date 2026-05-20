@@ -34,6 +34,11 @@ import torch
 from torch import Tensor, nn
 
 from canvit_pytorch.patcher.base import Patcher
+from canvit_pytorch.patcher.conditioning import (
+    PatchConditioningConfig,
+    conditioner_extra_in_channels,
+    create_conditioner,
+)
 from canvit_pytorch.viewpoint import Viewpoint
 
 
@@ -72,6 +77,10 @@ class FoveatedPatcherConfig:
     trailing activation. E.g. ``[1000]`` -> ``kpe``->1000, ReLU, Linear(1000->D);
     ``[1000, 1000]`` -> ``kpe``->1000, ReLU, Linear(1000->1000), ReLU,
     Linear(1000->D)."""
+    conditioning: PatchConditioningConfig = field(default_factory=PatchConditioningConfig)
+    """Optional position-conditioning of the patch embedding (see
+    :class:`PatchConditioningConfig`). Default ``mode='none'`` reproduces the
+    original unconditioned behavior exactly."""
 
 
 def _require_fovi() -> None:
@@ -120,6 +129,10 @@ class FoveatedPatcher(Patcher):
         hidden_dims = list(cfg.hidden_dims_patch_embed)
         kpe_embed_dim = hidden_dims[0] if hidden_dims else embed_dim
 
+        # Extra sensor channels appended by the conditioner (CoordConv); known
+        # from config alone so kpe's in_channels can be set before kpe is built.
+        extra_in_channels = conditioner_extra_in_channels(cfg.conditioning)
+
         # Retinal sampling: ``start_res`` / ``fixation_size`` set fovi's
         # reference at construction time; at forward time we pass
         # ``fixation_size=image_H`` so the fixation always covers the full
@@ -142,7 +155,7 @@ class FoveatedPatcher(Patcher):
         # embedding matches the one inside RetinalTransform (notebook checks
         # `in_coords match RT coords: True` under this convention).
         self.kpe = KNNPartitioningPatchEmbedding(
-            in_channels=3,
+            in_channels=3 + extra_in_channels,
             embed_dim=kpe_embed_dim,
             in_res=cfg.resolution,
             in_cart_res=cfg.resolution,
@@ -175,6 +188,21 @@ class FoveatedPatcher(Patcher):
         for i in range(len(hidden_dims)):
             head_layers += [nn.ReLU(), nn.Linear(head_dims[i], head_dims[i + 1])]
         self.embed_head = nn.Sequential(*head_layers).to(dev)
+
+        # Position-conditioning. Fovea-centric (x, y) for retinal samples and
+        # patch centers; conditioner built after kpe (needs kpe_out and coords)
+        # and given a chance to touch kpe weights (CoordConv no-op-at-init).
+        sample_xy = self.kpe.in_coords.cartesian.detach().clone().to(torch.float32)
+        patch_xy = self.kpe.out_coords.cartesian.detach().clone().to(torch.float32)
+        self.conditioner = create_conditioner(
+            cfg.conditioning,
+            n_patches=self.n_patches,
+            kpe_out=kpe_embed_dim,
+            embed_dim=embed_dim,
+            sample_xy=sample_xy,
+            patch_xy=patch_xy,
+        ).to(dev)
+        self.conditioner.after_kpe_built(self.kpe)
 
     @property
     def n_patches(self) -> int:
@@ -268,8 +296,11 @@ class FoveatedPatcher(Patcher):
         fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
         # Full-image foveation: the fixation window equals the image.
         sensor = self.retina(image, fix_loc=fix_loc, fixation_size=H)  # [B, 3, N_samples]
+        sensor = self.conditioner.transform_sensor(sensor)  # +coord channels (CoordConv)
         patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
+        patches = self.conditioner.modulate_kpe_output(patches)  # FiLM
         patches = self.embed_head(patches)  # [B, N_patches, embed_dim] (identity if no MLP)
+        patches = self.conditioner.add_to_output(patches)  # learned per-patch bias
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.
         # When fix_size == image_size the conversion factor between
