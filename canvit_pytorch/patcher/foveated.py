@@ -27,7 +27,7 @@ grid stays on CPU and ``grid_sample`` errors out at the first forward.
 clear ``ImportError``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 import torch
@@ -64,6 +64,14 @@ class FoveatedPatcherConfig:
     max_coord_val: float | Literal["auto"] = "auto"
     auto_match_cart_resources: bool = True
     force_patches_less_than_matched: bool = True
+    hidden_dims_patch_embed: list[int] = field(default_factory=list)
+    """Hidden layer widths for an MLP patch embedding. Empty (default) keeps the
+    original pure-linear embedding (``kpe`` projects straight to ``embed_dim``).
+    When non-empty, ``kpe`` outputs ``hidden_dims_patch_embed[0]`` and an MLP maps
+    it to ``embed_dim`` with a ReLU between every pair of linear layers and no
+    trailing activation. E.g. ``[1000]`` -> ``kpe``->1000, ReLU, Linear(1000->D);
+    ``[1000, 1000]`` -> ``kpe``->1000, ReLU, Linear(1000->1000), ReLU,
+    Linear(1000->D)."""
 
 
 def _require_fovi() -> None:
@@ -103,6 +111,15 @@ class FoveatedPatcher(Patcher):
         self.embed_dim = embed_dim
         dev = torch.device(device) if isinstance(device, str) else device
 
+        # Optional MLP patch embedding. With an empty `hidden_dims_patch_embed`
+        # the KNN-conv projection (`self.kpe`) maps straight to `embed_dim`
+        # (original pure-linear behavior). Otherwise `self.kpe` outputs the first
+        # hidden width and `self.embed_head` (built below) maps it to `embed_dim`.
+        # `self.embed_dim` always stays `embed_dim` — the patcher's output width
+        # is fixed by the backbone, only the kpe's output width changes.
+        hidden_dims = list(cfg.hidden_dims_patch_embed)
+        kpe_embed_dim = hidden_dims[0] if hidden_dims else embed_dim
+
         # Retinal sampling: ``start_res`` / ``fixation_size`` set fovi's
         # reference at construction time; at forward time we pass
         # ``fixation_size=image_H`` so the fixation always covers the full
@@ -126,7 +143,7 @@ class FoveatedPatcher(Patcher):
         # `in_coords match RT coords: True` under this convention).
         self.kpe = KNNPartitioningPatchEmbedding(
             in_channels=3,
-            embed_dim=embed_dim,
+            embed_dim=kpe_embed_dim,
             in_res=cfg.resolution,
             in_cart_res=cfg.resolution,
             fov=cfg.fov,
@@ -149,6 +166,15 @@ class FoveatedPatcher(Patcher):
         # in state_dict.
         rowcol = self.kpe.out_coords.cartesian_rowcol.detach().clone().to(torch.float32)
         self.register_buffer("_patch_rowcol", rowcol, persistent=False)
+
+        # MLP head over the per-patch tokens produced by `self.kpe`. Empty when
+        # `hidden_dims_patch_embed` is empty, in which case `self.embed_head` is
+        # an identity `nn.Sequential` and `self.kpe` already outputs `embed_dim`.
+        head_dims = hidden_dims + [embed_dim]
+        head_layers: list[nn.Module] = []
+        for i in range(len(hidden_dims)):
+            head_layers += [nn.ReLU(), nn.Linear(head_dims[i], head_dims[i + 1])]
+        self.embed_head = nn.Sequential(*head_layers).to(dev)
 
     @property
     def n_patches(self) -> int:
@@ -242,7 +268,8 @@ class FoveatedPatcher(Patcher):
         fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
         # Full-image foveation: the fixation window equals the image.
         sensor = self.retina(image, fix_loc=fix_loc, fixation_size=H)  # [B, 3, N_samples]
-        patches = self.kpe(sensor)  # [B, N_patches, embed_dim]
+        patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
+        patches = self.embed_head(patches)  # [B, N_patches, embed_dim] (identity if no MLP)
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.
         # When fix_size == image_size the conversion factor between
