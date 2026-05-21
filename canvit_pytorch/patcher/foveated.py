@@ -69,6 +69,14 @@ class FoveatedPatcherConfig:
     max_coord_val: float | Literal["auto"] = "auto"
     auto_match_cart_resources: bool = True
     force_patches_less_than_matched: bool = True
+    padding: Literal["zero", "learned", "learned_shared"] = "zero"
+    """Patch-embed padding for out-of-field (out-of-FOV) neighbor slots.
+    ``zero`` (default): out-of-field slots contribute 0 (original behavior).
+    ``learned``: a learned per-(input-channel, reference-cell) value fills the
+    out-of-field kernel cells. ``learned_shared``: a single learned per-channel
+    value (one 3-vector) broadcast to all out-of-field cells (classic CNN
+    learned padding). Both are zero-initialized (identical to ``zero`` at init)
+    and only meaningful for the foveated (KNNPartitioning) embedding."""
     hidden_dims_patch_embed: list[int] = field(default_factory=list)
     """Hidden layer widths for an MLP patch embedding. Empty (default) keeps the
     original pure-linear embedding (``kpe`` projects straight to ``embed_dim``).
@@ -170,6 +178,7 @@ class FoveatedPatcher(Patcher):
             sample_cortex=cfg.sample_cortex,
             arch_flag=cfg.arch_flag,
             ref_frame_side_length=cfg.ref_frame_side_length,
+            padding=cfg.padding,
             device=str(dev),
         )
 
