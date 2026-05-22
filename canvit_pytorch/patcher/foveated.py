@@ -3,8 +3,9 @@
 Operates on the **full image** (not a pre-cropped glimpse). Foveation is
 anchored at the model's current fixation point, which lives in
 ``viewpoint.centers`` ((row, col) in ``[-1, 1]^2``, image-coord frame). The
-``viewpoint.scales`` field is ignored — the fixation always covers the entire
-image at scale 1.
+``viewpoint.scales`` field is ignored; the sensor instead covers a window of
+``cfg.fixation_size`` px around the fixation (default = the image side length,
+i.e. full-image foveation; larger zooms out, smaller zooms in).
 
 Per-patch positions in the visual-field frame are exposed by fovi at
 ``KNNPartitioningPatchEmbedding.out_coords.cartesian_rowcol`` in ``[-1, 1]^2``
@@ -48,18 +49,20 @@ class FoveatedPatcherConfig:
 
     Defaults track ``fovi/notebooks/explore_foveated_config.ipynb`` (the
     "real peripheral retina" regime: wide fov, mild cmf, ``pooling`` sampler).
-    ``fixation_size`` matches the image side length used in training
-    (``scene_resolution=512`` in the pretrain config). At forward time the
-    fixation always covers the full image, so the relationship between
-    ``cfg.fixation_size`` (fovi's reference) and the actual image size used
-    determines whether the foveation pattern is correctly calibrated in
-    pixels — keep them in sync.
+    ``fixation_size`` is the foveation window in pixels (see the field doc);
+    the default 512 matches the default ``scene_resolution`` (full-image
+    foveation).
     """
 
     fov: float = 180.0
     cmf_a: float = 0.5
     resolution: int = 36
     fixation_size: int = 512
+    """Side length (px) of the foveation window the sensor samples around the
+    fixation point, used at forward time and reflected in ``scene_pos``. Default
+    512 == the default ``scene_resolution`` -> full-image foveation. Larger
+    (e.g. 722) zooms out (periphery falls outside the image); smaller zooms in
+    to a sub-window."""
     style: str = "isotropic"
     sampler: str = "pooling"
     cart_patch_size: int = 6
@@ -303,8 +306,11 @@ class FoveatedPatcher(Patcher):
         # fovi's ``fix_loc`` is (row, col) in [0, 1] normalized image coords.
         # ``viewpoint.centers`` is (row, col) in [-1, 1]; rescale.
         fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
-        # Full-image foveation: the fixation window equals the image.
-        sensor = self.retina(image, fix_loc=fix_loc, fixation_size=H)  # [B, 3, N_samples]
+        # Foveation window in pixels = cfg.fixation_size. Default (== image side
+        # length) is full-image foveation; larger zooms out (periphery samples
+        # outside the image), smaller zooms in to a sub-window.
+        fix_size = self.cfg.fixation_size
+        sensor = self.retina(image, fix_loc=fix_loc, fixation_size=fix_size)  # [B, 3, N_samples]
         sensor = self.conditioner.transform_sensor(sensor)  # +coord channels (CoordConv)
         patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
         patches = self.conditioner.modulate_kpe_output(patches)  # FiLM
@@ -312,12 +318,13 @@ class FoveatedPatcher(Patcher):
         patches = self.conditioner.add_to_output(patches)  # learned per-patch bias
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.
-        # When fix_size == image_size the conversion factor between
-        # visual-field rowcol and image rowcol is 1.0; patches near the edge
-        # may land at |scene_pos| > 1 (out-of-image), which is intentional —
-        # RoPE handles it and the model learns to ignore those patches.
+        # Convert visual-field rowcol (normalized to the fixation window) to
+        # image-frame coords via the window-to-image pixel ratio. Equals 1.0 for
+        # full-image foveation (fix_size == image side length); >1 when zoomed
+        # out, so edge patches land at |scene_pos| > 1 (out-of-image), which is
+        # intentional — RoPE handles it and the model learns to ignore them.
         rowcol = self._patch_rowcol.to(torch.float32)  # [N, 2]
-        fix_size_norm = float(H) / float(H)  # = 1.0; explicit for clarity
+        fix_size_norm = float(fix_size) / float(H)
         scene_pos = (
             viewpoint.centers.view(B, 1, 2).to(torch.float32)
             + fix_size_norm * rowcol.view(1, -1, 2)
