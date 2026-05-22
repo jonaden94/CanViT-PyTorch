@@ -69,9 +69,10 @@ class FiLMConfig:
 
     input: Literal["position", "learned"] = "position"
     """``position``: Fourier-expanded ``(x, y, r)`` per patch. ``learned``: a
-    trainable low-dim per-patch code fed to the MLP directly (no Fourier)."""
+    trainable per-patch code fed to the MLP directly (no Fourier)."""
     learned_dim: int = 8
-    """Width ``k`` of the learned per-patch code. Only used when ``input='learned'``."""
+    """Dimension of the learned per-patch code (your choice). Only used when
+    ``input='learned'``."""
     mlp_hidden: list[int] = field(default_factory=lambda: [128])
     """Hidden widths of the MLP mapping the (encoded) input to ``(gamma, beta)``."""
     modulate: Literal["both", "scale", "shift"] = "both"
