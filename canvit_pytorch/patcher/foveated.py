@@ -92,6 +92,14 @@ class FoveatedPatcherConfig:
     """Optional position-conditioning of the patch embedding (see
     :class:`PatchConditioningConfig`). Default ``mode='none'`` reproduces the
     original unconditioned behavior exactly."""
+    per_ring_kernel: bool = False
+    """If True, the KNN-conv patch embedding learns a separate kernel for each
+    eccentricity ring of patches instead of one shared kernel. Foveated patches
+    lie on discrete concentric rings (shared polar radius per ring); each ring
+    gets its own weight slab. Adds parameters (x number of rings, which depends
+    on the fovi config) but no extra FLOPs. Shared-kernel-identical at init, so
+    ``False`` (default) and a freshly-toggled ``True`` start from the same point.
+    Only meaningful for the foveated (KNNPartitioning) embedding."""
 
 
 def _require_fovi() -> None:
@@ -182,6 +190,7 @@ class FoveatedPatcher(Patcher):
             arch_flag=cfg.arch_flag,
             ref_frame_side_length=cfg.ref_frame_side_length,
             padding=cfg.padding,
+            per_ring_kernel=cfg.per_ring_kernel,
             device=str(dev),
         )
 
