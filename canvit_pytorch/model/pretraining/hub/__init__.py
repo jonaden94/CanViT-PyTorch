@@ -13,6 +13,12 @@ from safetensors.torch import save_file
 from canvit_pytorch.backbone import create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
 from canvit_pytorch.patcher import FoveatedPatcherConfig
+from canvit_pytorch.patcher.conditioning import (
+    CoordConvConfig,
+    FiLMConfig,
+    FourierConfig,
+    PatchConditioningConfig,
+)
 
 from ..impl import CanViTForPretraining, CanViTForPretrainingConfig
 
@@ -136,12 +142,26 @@ class CanViTForPretrainingHFHub(
         # nested dataclasses to dicts), but CanViTForPretrainingConfig(
         # **model_config) does no recursive coercion, so FoveatedPatcher would
         # receive a dict. Strictly gated on patcher_name == "foveated" so the
-        # uniform path is byte-for-byte unaffected.
+        # uniform path is byte-for-byte unaffected. The conditioning subtree
+        # has its own nested dataclasses (FiLMConfig / FourierConfig /
+        # CoordConvConfig) that must also be coerced recursively.
         if (model_config.get("patcher_name") == "foveated"
                 and isinstance(model_config.get("foveated_patcher"), dict)):
+            fp = dict(model_config["foveated_patcher"])
+            cond = fp.get("conditioning")
+            if isinstance(cond, dict):
+                cond = dict(cond)
+                if isinstance(cond.get("film"), dict):
+                    film = dict(cond["film"])
+                    if isinstance(film.get("fourier"), dict):
+                        film["fourier"] = FourierConfig(**film["fourier"])
+                    cond["film"] = FiLMConfig(**film)
+                if isinstance(cond.get("coordconv"), dict):
+                    cond["coordconv"] = CoordConvConfig(**cond["coordconv"])
+                fp["conditioning"] = PatchConditioningConfig(**cond)
             model_config = {
                 **model_config,
-                "foveated_patcher": FoveatedPatcherConfig(**model_config["foveated_patcher"]),
+                "foveated_patcher": FoveatedPatcherConfig(**fp),
             }
         super().__init__(
             backbone=create_backbone(backbone_name),
