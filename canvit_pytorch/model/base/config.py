@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-from canvit_pytorch.patcher import FoveatedPatcherConfig, PatcherName
+from canvit_pytorch.patcher import FoveatedPatcherConfig, PatcherName, SquarePatcherConfig
 
 
 @dataclass
@@ -20,11 +20,14 @@ class CanViTConfig:
     canvas_update_mode: Literal["additive", "convex"] = "additive"
     canvas_proj_mode: Literal["asymmetric", "full"] = "asymmetric"
     gate_bias_init: float | None = None
-    # Patcher: "uniform" (default, current behavior) or "foveated" (fovi-based,
-    # requires the canvit-pytorch[fovi] extra). Foveated geometry params live
-    # in `foveated_patcher` and are ignored when `patcher_name == "uniform"`.
+    # Patcher: "uniform" (default, current behavior), "foveated" (fovi-based) or
+    # "square" (axis-aligned square patches, fovi-derived or strided; both
+    # require the canvit-pytorch[fovi] extra). Per-patcher geometry params live
+    # in `foveated_patcher` / `square_patcher` and are ignored unless the
+    # matching `patcher_name` is selected.
     patcher_name: PatcherName = "uniform"
     foveated_patcher: FoveatedPatcherConfig = field(default_factory=FoveatedPatcherConfig)
+    square_patcher: SquarePatcherConfig = field(default_factory=SquarePatcherConfig)
 
     def __post_init__(self) -> None:
         is_convex = self.canvas_update_mode == "convex"

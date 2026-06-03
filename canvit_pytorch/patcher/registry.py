@@ -8,12 +8,13 @@ import torch
 from canvit_pytorch.backbone.vit import ViTBackbone
 from canvit_pytorch.patcher.base import Patcher
 from canvit_pytorch.patcher.foveated import FoveatedPatcherConfig
+from canvit_pytorch.patcher.square import SquarePatcherConfig
 from canvit_pytorch.patcher.uniform import UniformPatcher
 
 log = logging.getLogger(__name__)
 
 
-PatcherName = Literal["uniform", "foveated"]
+PatcherName = Literal["uniform", "foveated", "square"]
 
 
 def create_patcher(
@@ -22,24 +23,28 @@ def create_patcher(
     backbone: ViTBackbone,
     glimpse_size_px: int | None = None,
     foveated_config: FoveatedPatcherConfig | None = None,
+    square_config: SquarePatcherConfig | None = None,
     device: torch.device | str = "cpu",
 ) -> Patcher:
     """Create a Patcher by name.
 
     Args:
         name: ``"uniform"`` for the default uniform-grid patcher (delegates to
-            ``backbone.patch_embed``), or ``"foveated"`` for the fovi-based
-            foveated patcher.
+            ``backbone.patch_embed``), ``"foveated"`` for the fovi-based
+            foveated patcher, or ``"square"`` for the axis-aligned square-patch
+            patcher (fovi-derived or standalone strided-square).
         backbone: the constructed ViT backbone. The uniform patcher references
-            ``backbone.patch_embed``; the foveated patcher only reads
+            ``backbone.patch_embed``; the foveated / square patchers only read
             ``backbone.embed_dim``.
         glimpse_size_px: side length (in pixels) of the crop the uniform
-            patcher takes from the full image. Ignored by the foveated patcher
-            (which operates on the full image).
+            patcher takes from the full image. Ignored by the foveated / square
+            patchers (which operate on the full image).
         foveated_config: only consulted for ``name="foveated"``. Defaults to
             ``FoveatedPatcherConfig()`` if ``None``.
+        square_config: only consulted for ``name="square"``. Defaults to
+            ``SquarePatcherConfig()`` if ``None``.
         device: target device for fovi's sampling state. Only consulted for
-            ``name="foveated"``.
+            ``name in {"foveated", "square"}``.
     """
     if name == "uniform":
         return UniformPatcher(backbone=backbone, glimpse_size_px=glimpse_size_px)
@@ -56,4 +61,19 @@ def create_patcher(
             cfg.cart_patch_size, cfg.sampler, patcher.n_patches,
         )
         return patcher
-    raise ValueError(f"Unknown patcher: {name!r}. Available: 'uniform', 'foveated'")
+    if name == "square":
+        # Lazy import — fovi is an optional dependency.
+        from canvit_pytorch.patcher.square import SquarePatcher
+
+        cfg = square_config if square_config is not None else SquarePatcherConfig()
+        patcher = SquarePatcher(cfg, embed_dim=backbone.embed_dim, device=device)
+        log.info(
+            "Created square patcher: method=%s fixation_size=%d side=%d "
+            "n_patches=%d padding=%s",
+            cfg.method, cfg.fixation_size, patcher._side,
+            patcher.n_patches, cfg.padding,
+        )
+        return patcher
+    raise ValueError(
+        f"Unknown patcher: {name!r}. Available: 'uniform', 'foveated', 'square'"
+    )

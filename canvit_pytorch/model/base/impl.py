@@ -139,6 +139,7 @@ class CanViT(nn.Module):
                 backbone=backbone,
                 glimpse_size_px=glimpse_size_px,
                 foveated_config=cfg.foveated_patcher,
+                square_config=cfg.square_patcher,
             )
         self.patcher = patcher
 

@@ -21,6 +21,7 @@ from canvit_pytorch.patcher.conditioning import (
 )
 from canvit_pytorch.patcher.foveated import FoveatedPatcherConfig
 from canvit_pytorch.patcher.registry import PatcherName, create_patcher
+from canvit_pytorch.patcher.square import SquarePatcherConfig
 from canvit_pytorch.patcher.uniform import UniformPatcher
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "PatchConditioningConfig",
     "Patcher",
     "PatcherName",
+    "SquarePatcherConfig",
     "UniformPatcher",
     "create_patcher",
 ]

@@ -18,6 +18,7 @@ from canvit_pytorch.patcher import (
     FoveatedPatcherConfig,
     Patcher,
     PatcherName,
+    SquarePatcherConfig,
     UniformPatcher,
     create_patcher,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "PositionAwareStandardizer",
     "RecurrentState",
     "SegmentationProbe",
+    "SquarePatcherConfig",
     "UniformPatcher",
     "VPEEncoder",
     "Viewpoint",

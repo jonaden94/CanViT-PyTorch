@@ -12,7 +12,7 @@ from safetensors.torch import save_file
 
 from canvit_pytorch.backbone import create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
-from canvit_pytorch.patcher import FoveatedPatcherConfig
+from canvit_pytorch.patcher import FoveatedPatcherConfig, SquarePatcherConfig
 from canvit_pytorch.patcher.conditioning import (
     CoordConvConfig,
     FiLMConfig,
@@ -137,17 +137,16 @@ class CanViTForPretrainingHFHub(
         model_config: dict[str, Any],
         canvas_patch_grid_sizes: list[int],
     ):
-        # Coerce nested foveated_patcher dict → dataclass for foveated
+        # Coerce nested patcher dict → dataclass for foveated / square
         # checkpoints. upload_to_hf serializes the config via asdict (flattens
         # nested dataclasses to dicts), but CanViTForPretrainingConfig(
-        # **model_config) does no recursive coercion, so FoveatedPatcher would
-        # receive a dict. Strictly gated on patcher_name == "foveated" so the
-        # uniform path is byte-for-byte unaffected. The conditioning subtree
-        # has its own nested dataclasses (FiLMConfig / FourierConfig /
-        # CoordConvConfig) that must also be coerced recursively.
-        if (model_config.get("patcher_name") == "foveated"
-                and isinstance(model_config.get("foveated_patcher"), dict)):
-            fp = dict(model_config["foveated_patcher"])
+        # **model_config) does no recursive coercion, so the patcher would
+        # receive a dict. Strictly gated on patcher_name so the uniform path is
+        # byte-for-byte unaffected. The conditioning subtree has its own nested
+        # dataclasses (FiLMConfig / FourierConfig / CoordConvConfig) that must
+        # also be coerced recursively.
+        def _coerce_conditioning(fp: dict) -> dict:
+            fp = dict(fp)
             cond = fp.get("conditioning")
             if isinstance(cond, dict):
                 cond = dict(cond)
@@ -159,9 +158,23 @@ class CanViTForPretrainingHFHub(
                 if isinstance(cond.get("coordconv"), dict):
                     cond["coordconv"] = CoordConvConfig(**cond["coordconv"])
                 fp["conditioning"] = PatchConditioningConfig(**cond)
+            return fp
+
+        if (model_config.get("patcher_name") == "foveated"
+                and isinstance(model_config.get("foveated_patcher"), dict)):
             model_config = {
                 **model_config,
-                "foveated_patcher": FoveatedPatcherConfig(**fp),
+                "foveated_patcher": FoveatedPatcherConfig(
+                    **_coerce_conditioning(model_config["foveated_patcher"])
+                ),
+            }
+        if (model_config.get("patcher_name") == "square"
+                and isinstance(model_config.get("square_patcher"), dict)):
+            model_config = {
+                **model_config,
+                "square_patcher": SquarePatcherConfig(
+                    **_coerce_conditioning(model_config["square_patcher"])
+                ),
             }
         super().__init__(
             backbone=create_backbone(backbone_name),

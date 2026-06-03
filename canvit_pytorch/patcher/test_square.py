@@ -1,0 +1,246 @@
+"""Sanity tests for the square patcher.
+
+Covers, across the three sampling-pattern methods (``fovi`` /
+``fovi_regularized`` / ``strided``):
+  - Output shapes (patches, scene_positions) and ``n_patches``.
+  - Position-frame correctness: full-scene viewpoint -> scene_pos == patch
+    rowcol; off-center viewpoint shifts scene_pos by viewpoint.centers (same
+    contract as the foveated patcher).
+  - Optional FiLM / learned-bias conditioning and learned padding are no-ops at
+    init (output identical to the unconditioned / zero-padding patcher).
+  - CoordConv conditioning is rejected.
+  - ``.to(dtype)`` migrates the cached buffers.
+  - Drop-in integration with CanViT (uniform-mode regression unaffected).
+
+Skipped when the optional ``fovi`` dependency is not installed.
+"""
+
+import copy
+import importlib.util
+
+import pytest
+import torch
+
+from canvit_pytorch import (
+    CanViT,
+    CanViTConfig,
+    SquarePatcherConfig,
+    Viewpoint,
+    create_backbone,
+    create_patcher,
+)
+from canvit_pytorch.patcher.conditioning import FiLMConfig, PatchConditioningConfig
+from canvit_pytorch.patcher.square import SquarePatcher
+
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("fovi") is None,
+    reason="fovi optional dependency not installed",
+)
+
+# Compact configs (small fixation window so peripheral square samples spill out
+# of field and exercise the padding path). The fovi-derived params match the
+# foveated test's SMALL config so the geometry source is cheap to build.
+FOVI_KW = dict(
+    fov=16.0, cmf_a=2.785765, resolution=32, style="isotropic",
+    cart_patch_size=8, sample_cortex=True, fixation_size=128,
+)
+CFGS = {
+    "fovi": SquarePatcherConfig(method="fovi", **FOVI_KW),
+    "fovi_regularized": SquarePatcherConfig(method="fovi_regularized", **FOVI_KW),
+    # fixation_size (64) < the strided receptive field (~103 px) so peripheral
+    # samples fall outside the window and exercise the padding path.
+    "strided": SquarePatcherConfig(
+        method="strided", grid_size_fovea=2, patch_size=6,
+        edge_length_multipliers=[2, 6], fixation_size=64,
+    ),
+}
+EMBED_DIM = 32
+
+
+def _patcher(cfg: SquarePatcherConfig) -> SquarePatcher:
+    return SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
+
+
+@pytest.mark.parametrize("method", list(CFGS))
+def test_buffers_and_npatches(method):
+    p = _patcher(CFGS[method])
+    assert p.n_patches > 0
+    assert p._patch_rowcol.shape == (p.n_patches, 2)
+    assert p._pad_mask.shape == (p.n_patches, p._k)
+    assert p._sample_colrow.shape == (1, 1, p.n_patches * p._k, 2)
+    assert p._patch_rowcol.dtype == torch.float32
+
+
+@pytest.mark.parametrize("method", list(CFGS))
+def test_forward_shapes(method):
+    cfg = CFGS[method]
+    p = _patcher(cfg)
+    B, gpx = 2, cfg.fixation_size
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
+    with torch.inference_mode():
+        patches, scene_pos = p(image, vp)
+    assert patches.shape == (B, p.n_patches, EMBED_DIM)
+    assert scene_pos.shape == (B, p.n_patches, 2)
+    assert scene_pos.dtype == torch.float32
+
+
+@pytest.mark.parametrize("method", list(CFGS))
+def test_scene_positions_full_scene(method):
+    """Full-scene viewpoint (centers=0) -> scene_pos == patch rowcol."""
+    cfg = CFGS[method]
+    p = _patcher(cfg)
+    B, gpx = 3, cfg.fixation_size
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
+    with torch.inference_mode():
+        _, scene_pos = p(image, vp)
+    for b in range(B):
+        assert torch.allclose(scene_pos[b], p._patch_rowcol, atol=1e-5)
+
+
+@pytest.mark.parametrize("method", list(CFGS))
+def test_scene_positions_translated(method):
+    """Off-center viewpoint shifts scene_pos by viewpoint.centers."""
+    cfg = CFGS[method]
+    p = _patcher(cfg)
+    gpx = cfg.fixation_size
+    image = torch.randn(1, 3, gpx, gpx)
+    centers = torch.tensor([[0.3, -0.2]], dtype=torch.float32)
+    vp = Viewpoint(centers=centers, scales=torch.tensor([0.4]))
+    with torch.inference_mode():
+        _, scene_pos = p(image, vp)
+    expected = centers.view(1, 1, 2) + p._patch_rowcol.view(1, -1, 2)
+    assert torch.allclose(scene_pos, expected, atol=1e-5)
+
+
+def test_foveal_patch_near_origin():
+    """The fovi-square patch nearest the fixation sits at ~origin in rowcol."""
+    p = _patcher(CFGS["fovi"])
+    rowcol = p._patch_rowcol
+    foveal = rowcol[int((rowcol ** 2).sum(-1).argmin())]
+    assert foveal.abs().max() < 1e-2, f"Expected foveal patch near origin; got {foveal}"
+
+
+def test_strided_has_padding():
+    """A small fixation window makes peripheral strided samples out-of-field."""
+    p = _patcher(CFGS["strided"])
+    assert int(p._pad_mask.sum()) > 0
+
+
+def test_conditioning_film_noop_at_init():
+    """FiLM conditioning is a no-op at init (zero-init final layer)."""
+    base = _patcher(CFGS["fovi"])
+    cfg = copy.deepcopy(CFGS["fovi"])
+    cfg.conditioning = PatchConditioningConfig(mode="film", film=FiLMConfig())
+    cond = SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
+    # Share the (randomly-initialized) embed + head so only conditioning differs.
+    cond.embed.load_state_dict(base.embed.state_dict())
+    cond.embed_head.load_state_dict(base.embed_head.state_dict())
+    gpx = cfg.fixation_size
+    image = torch.randn(1, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=1, device=image.device)
+    with torch.inference_mode():
+        a, _ = base(image, vp)
+        b, _ = cond(image, vp)
+    assert torch.allclose(a, b, atol=1e-5)
+
+
+def test_learned_padding_noop_at_init():
+    """Learned padding (zero-init) == zero padding at init."""
+    base = _patcher(CFGS["strided"])
+    cfg = copy.deepcopy(CFGS["strided"])
+    cfg.padding = "learned"
+    learned = SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
+    learned.embed.load_state_dict(base.embed.state_dict())
+    learned.embed_head.load_state_dict(base.embed_head.state_dict())
+    assert learned.pad_value is not None and float(learned.pad_value.detach().abs().sum()) == 0.0
+    gpx = cfg.fixation_size
+    image = torch.randn(1, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=1, device=image.device)
+    with torch.inference_mode():
+        a, _ = base(image, vp)
+        b, _ = learned(image, vp)
+    assert torch.allclose(a, b, atol=1e-5)
+
+
+def test_pad_mask_applied_under_zero_padding():
+    """The pad mask must blank masked slots even with padding='zero' (default),
+    independent of grid_sample's out-of-image zeroing. Uses a window (64) smaller
+    than the image (128) so masked samples land *inside* the image — there,
+    zeroing genuinely changes the result."""
+    import torch.nn.functional as F
+    from fovi.sensing.coords import transform_sampling_grid
+
+    p = _patcher(CFGS["strided"])  # fixation_size=64
+    assert int(p.pad_mask.sum()) > 0
+    H = 128  # image larger than the 64-px window -> masked samples are in-image
+    img = torch.randn(1, 3, H, H)
+    vp = Viewpoint.full_scene(batch_size=1, device=img.device)
+    B, C, P, K = 1, 3, p.n_patches, p._k
+
+    def _embed(samp):
+        x = samp.permute(0, 2, 1, 3).reshape(B, P, C * K)
+        x = p.embed(x)
+        x = p.conditioner.modulate_kpe_output(x)
+        x = p.embed_head(x)
+        return p.conditioner.add_to_output(x)
+
+    with torch.inference_mode():
+        out, _ = p(img, vp)
+        fix_loc = (vp.centers.float() + 1) * 0.5
+        fst = torch.tensor([[p.fixation_size, p.fixation_size]], dtype=torch.float32)
+        grid = transform_sampling_grid(p._sample_colrow, fix_loc, fst, (H, H))
+        raw = F.grid_sample(img.float(), grid, mode="bilinear", padding_mode="zeros",
+                            align_corners=False)[:, :, 0, :].reshape(B, C, P, K)
+        zeroed = raw.masked_fill(p.pad_mask.view(1, 1, P, K), 0.0)
+
+    # forward == sample-then-zero-pad-then-embed
+    assert torch.allclose(out, _embed(zeroed), atol=1e-5)
+    # and NOT zeroing the mask gives a different result -> the mask is active & matters
+    assert not torch.allclose(out, _embed(raw), atol=1e-5)
+
+
+def test_coordconv_rejected():
+    cfg = copy.deepcopy(CFGS["fovi"])
+    cfg.conditioning = PatchConditioningConfig(mode="coordconv")
+    with pytest.raises(AssertionError, match="coordconv"):
+        SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
+
+
+def test_to_migrates_buffers():
+    p = _patcher(CFGS["fovi"]).to(torch.float64)
+    assert p._sample_colrow.dtype == torch.float64
+    assert p._patch_rowcol.dtype == torch.float64
+    assert p._pad_mask.dtype == torch.bool  # non-float unchanged
+
+
+@pytest.fixture(scope="module")
+def backbone():
+    return create_backbone("vits16")
+
+
+def test_create_patcher_square(backbone):
+    p = create_patcher("square", backbone=backbone, square_config=CFGS["strided"])
+    assert isinstance(p, SquarePatcher)
+    assert p.embed_dim == backbone.embed_dim
+
+
+def test_canvit_end_to_end_square(backbone):
+    cfg = CanViTConfig(patcher_name="square", square_patcher=CFGS["strided"])
+    model = CanViT(backbone=backbone, cfg=cfg).eval()
+    B, gpx, canvas_grid = 2, CFGS["strided"].fixation_size, 16
+    image = torch.randn(B, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=B, device=image.device)
+    state = model.init_state(batch_size=B, canvas_grid_size=canvas_grid)
+    with torch.inference_mode():
+        out = model(image=image, state=state, viewpoint=vp)
+    assert out.local_patches.shape[0] == B
+    assert out.local_patches.shape[1] == model.patcher.n_patches
+    assert out.local_patches.shape[2] == backbone.embed_dim
+
+
+def test_uniform_unaffected(backbone):
+    """Uniform mode still introduces no patcher.* state_dict keys."""
+    model = CanViT(backbone=backbone, cfg=CanViTConfig()).eval()
+    assert [k for k in model.state_dict() if k.startswith("patcher")] == []
