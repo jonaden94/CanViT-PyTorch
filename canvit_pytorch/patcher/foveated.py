@@ -40,6 +40,7 @@ from canvit_pytorch.patcher.conditioning import (
     conditioner_extra_in_channels,
     create_conditioner,
 )
+from canvit_pytorch.patcher.embed import build_embed_head
 from canvit_pytorch.viewpoint import Viewpoint
 
 
@@ -204,11 +205,7 @@ class FoveatedPatcher(Patcher):
         # MLP head over the per-patch tokens produced by `self.kpe`. Empty when
         # `hidden_dims_patch_embed` is empty, in which case `self.embed_head` is
         # an identity `nn.Sequential` and `self.kpe` already outputs `embed_dim`.
-        head_dims = hidden_dims + [embed_dim]
-        head_layers: list[nn.Module] = []
-        for i in range(len(hidden_dims)):
-            head_layers += [nn.ReLU(), nn.Linear(head_dims[i], head_dims[i + 1])]
-        self.embed_head = nn.Sequential(*head_layers).to(dev)
+        self.embed_head = build_embed_head(hidden_dims, embed_dim, dev)
 
         # Position-conditioning. Fovea-centric (x, y) for retinal samples and
         # patch centers; conditioner built after kpe (needs kpe_out and coords)
