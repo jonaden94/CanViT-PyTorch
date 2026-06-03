@@ -84,7 +84,7 @@ class CanViTForImageClassification(
 
         # Both have the same forward:
         state = clf.init_state(batch_size=B, canvas_grid_size=32)
-        logits, state = clf(image=glimpse, state=state, viewpoint=vp)
+        logits, state = clf(glimpse=glimpse, state=state, viewpoint=vp)
     """
 
     def __init__(

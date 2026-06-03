@@ -144,7 +144,7 @@ class TestCanViTForSemanticSegmentation:
         seg = _minimal_seg_model().eval()
         state = seg.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         with torch.inference_mode():
-            logits, new_state = seg(image=glimpse, state=state, viewpoint=vp)
+            logits, new_state = seg(glimpse=glimpse, state=state, viewpoint=vp)
         assert logits.shape == (B, NUM_CLASSES, CANVAS_GRID, CANVAS_GRID)
         assert new_state.canvas.shape == state.canvas.shape
 
@@ -155,7 +155,7 @@ class TestCanViTForSemanticSegmentation:
         state = seg.init_state(batch_size=B, canvas_grid_size=CANVAS_GRID)
         target = (64, 96)  # non-square, not a multiple of canvas_grid
         with torch.inference_mode():
-            logits, new_state = seg.predict(image=glimpse, state=state, viewpoint=vp, target_size=target)
+            logits, new_state = seg.predict(glimpse=glimpse, state=state, viewpoint=vp, target_size=target)
         assert logits.shape == (B, NUM_CLASSES, *target)
         assert new_state.canvas.shape == state.canvas.shape
 
