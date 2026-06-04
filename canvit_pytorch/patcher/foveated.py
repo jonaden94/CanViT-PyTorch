@@ -40,7 +40,7 @@ from canvit_pytorch.patcher.conditioning import (
     conditioner_extra_in_channels,
     create_conditioner,
 )
-from canvit_pytorch.patcher.embed import build_embed_head
+from canvit_pytorch.patcher.embed import build_embed_head, count_unique_pixels
 from canvit_pytorch.viewpoint import Viewpoint
 
 
@@ -304,6 +304,25 @@ class FoveatedPatcher(Patcher):
     @property
     def fixation_size(self) -> int:
         return self.cfg.fixation_size
+
+    def pattern_stats(self) -> dict[str, int]:
+        """High-level characterization of the foveated sampling pattern, for logging.
+
+        ``n_patches`` / ``samples_per_patch`` (= the per-patch KNN member count
+        ``kpe._k``, with outer rings padded; patches overlap, so this is not
+        multiplicative with ``n_patches``); ``n_padded`` = the out-of-FOV KNN
+        neighbor slots (fixation-invariant); ``unique_pixels`` = distinct pixel
+        cells the retinal samples resolve at ``fixation_size``, centered. See
+        :func:`canvit_pytorch.patcher.embed.count_unique_pixels`.
+        """
+        return {
+            "n_patches": int(self.n_patches),
+            "samples_per_patch": int(self.kpe._k),
+            "n_padded": int(self.kpe.knn_indices_pad_mask.sum()),
+            "unique_pixels": count_unique_pixels(
+                self.kpe.in_coords.cartesian, self.cfg.fixation_size
+            ),
+        }
 
     def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
         B, _, H, W = image.shape

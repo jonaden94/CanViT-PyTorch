@@ -45,7 +45,7 @@ from torch import Tensor, nn
 
 from canvit_pytorch.patcher.base import Patcher
 from canvit_pytorch.patcher.conditioning import PatchConditioningConfig, create_conditioner
-from canvit_pytorch.patcher.embed import build_embed_head
+from canvit_pytorch.patcher.embed import build_embed_head, count_unique_pixels
 from canvit_pytorch.viewpoint import Viewpoint
 
 
@@ -317,6 +317,29 @@ class SquarePatcher(Patcher):
         x = colrow[..., 0]
         y = -colrow[..., 1]
         return torch.stack([x, y], dim=-1).contiguous()
+
+    def pattern_stats(self) -> dict[str, int]:
+        """High-level characterization of the frozen sampling pattern, for logging.
+
+        ``n_patches`` / ``samples_per_patch`` (= ``K``); ``n_padded`` = the
+        structurally-padded sample slots (the fixation-invariant FOV mask, *not*
+        out-of-image padding); ``unique_pixels`` = distinct in-image pixels the
+        *non-padded* samples resolve at the reference scale
+        (``pattern_reference_size`` if set, else ``fixation_size``), centered.
+        See :func:`canvit_pytorch.patcher.embed.count_unique_pixels`.
+        """
+        ref = (
+            self.cfg.pattern_reference_size
+            if self.cfg.pattern_reference_size is not None
+            else self.cfg.fixation_size
+        )
+        non_padded = self.sample_positions_xy()[~self._pad_mask]
+        return {
+            "n_patches": int(self._n_patches),
+            "samples_per_patch": int(self._k),
+            "n_padded": int(self._pad_mask.sum()),
+            "unique_pixels": count_unique_pixels(non_padded, ref),
+        }
 
     def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
         from fovi.sensing.coords import transform_sampling_grid

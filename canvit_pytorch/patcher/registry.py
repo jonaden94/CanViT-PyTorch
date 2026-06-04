@@ -54,11 +54,14 @@ def create_patcher(
 
         cfg = foveated_config if foveated_config is not None else FoveatedPatcherConfig()
         patcher = FoveatedPatcher(cfg, embed_dim=backbone.embed_dim, device=device)
+        st = patcher.pattern_stats()
         log.info(
             "Created foveated patcher: fov=%.1f cmf_a=%.4f resolution=%d "
-            "fixation_size=%d cart_patch_size=%d sampler=%s n_patches=%d",
+            "fixation_size=%d cart_patch_size=%d sampler=%s n_patches=%d "
+            "samples_per_patch=%d n_padded=%d unique_pixels=%d",
             cfg.fov, cfg.cmf_a, cfg.resolution, cfg.fixation_size,
-            cfg.cart_patch_size, cfg.sampler, patcher.n_patches,
+            cfg.cart_patch_size, cfg.sampler, st["n_patches"],
+            st["samples_per_patch"], st["n_padded"], st["unique_pixels"],
         )
         return patcher
     if name == "square":
@@ -67,11 +70,13 @@ def create_patcher(
 
         cfg = square_config if square_config is not None else SquarePatcherConfig()
         patcher = SquarePatcher(cfg, embed_dim=backbone.embed_dim, device=device)
+        st = patcher.pattern_stats()
         log.info(
             "Created square patcher: method=%s fixation_size=%d side=%d "
-            "n_patches=%d padding=%s",
+            "n_patches=%d padding=%s samples_per_patch=%d n_padded=%d unique_pixels=%d",
             cfg.method, cfg.fixation_size, patcher._side,
             patcher.n_patches, cfg.padding,
+            st["samples_per_patch"], st["n_padded"], st["unique_pixels"],
         )
         return patcher
     raise ValueError(
