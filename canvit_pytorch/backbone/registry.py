@@ -24,12 +24,17 @@ BackboneName = Literal[
     "vits16",
     "vitb16",
     "vitl16",
+    "vitb8",
 ]
 
 REGISTRY: dict[str, BackboneConfig] = {
     "vits16": BackboneConfig(embed_dim=384, num_heads=6, n_blocks=12, patch_size=16),
     "vitb16": BackboneConfig(embed_dim=768, num_heads=12, n_blocks=12, patch_size=16),
     "vitl16": BackboneConfig(embed_dim=1024, num_heads=16, n_blocks=24, patch_size=16),
+    # Patch-8 variant of vitb16 (random-init student only): same width/depth, but
+    # an 8x8 patch_embed kernel so a glimpse covers the same crop at half the
+    # per-patch pixel resolution (64 patches @ 8x8px vs the default 64 @ 16x16px).
+    "vitb8": BackboneConfig(embed_dim=768, num_heads=12, n_blocks=12, patch_size=8),
 }
 
 
