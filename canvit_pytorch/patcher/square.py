@@ -218,9 +218,10 @@ class SquarePatcher(Patcher):
         _require_fovi()
         from fovi.sensing.coords import xy_to_colrow, xy_to_rowcol
 
-        assert cfg.conditioning.mode != "coordconv", (
+        assert cfg.conditioning.mode not in ("coordconv", "coordconv_film"), (
             "SquarePatcher does not support coordconv conditioning "
-            "(its weight surgery is specific to the KNN-conv embed)."
+            f"(got mode={cfg.conditioning.mode!r}); its weight surgery is "
+            "specific to the KNN-conv embed."
         )
 
         self.cfg = cfg

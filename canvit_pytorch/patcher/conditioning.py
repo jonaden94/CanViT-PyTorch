@@ -95,9 +95,12 @@ class CoordConvConfig:
 class PatchConditioningConfig:
     """Selector + per-mode settings for patch-embedding conditioning."""
 
-    mode: Literal["none", "bias", "film", "coordconv"] = "none"
+    mode: Literal["none", "bias", "film", "coordconv", "coordconv_film"] = "none"
     """``none`` (default) = unconditioned; ``bias`` = learned per-patch output bias;
-    ``film`` = FiLM on ``kpe`` output; ``coordconv`` = extra input channels."""
+    ``film`` = FiLM on ``kpe`` output; ``coordconv`` = extra input channels;
+    ``coordconv_film`` = both at once (CoordConv input channels + FiLM output
+    modulation -- disjoint hooks, so they compose; uses the ``film`` and
+    ``coordconv`` sub-configs below)."""
     film: FiLMConfig = field(default_factory=FiLMConfig)
     coordconv: CoordConvConfig = field(default_factory=CoordConvConfig)
 
@@ -275,6 +278,43 @@ class CoordConvConditioner(PatchConditioner):
             kpe.weight[:, 3 * n_ref :].zero_()  # type: ignore[attr-defined,index]
 
 
+class CompositeConditioner(PatchConditioner):
+    """Apply several conditioners in sequence.
+
+    Used to combine conditioning that acts on *disjoint* hooks -- specifically
+    CoordConv (``transform_sensor``, input side) + FiLM (``modulate_kpe_output``,
+    output side). Each child is identity on the hooks it does not own, so chaining
+    never double-applies a hook. The no-op-at-init property holds as long as every
+    child is a no-op at init (CoordConv zeros the appended-channel kpe weights;
+    FiLM zero-inits gamma/beta), so the composite is itself bit-identical to the
+    unconditioned model at step 0.
+    """
+
+    def __init__(self, conditioners: list[PatchConditioner]) -> None:
+        super().__init__()
+        self.conditioners = nn.ModuleList(conditioners)
+        self.extra_in_channels = sum(int(c.extra_in_channels) for c in conditioners)
+
+    def transform_sensor(self, sensor: Tensor) -> Tensor:
+        for c in self.conditioners:
+            sensor = c.transform_sensor(sensor)
+        return sensor
+
+    def modulate_kpe_output(self, h: Tensor) -> Tensor:
+        for c in self.conditioners:
+            h = c.modulate_kpe_output(h)
+        return h
+
+    def add_to_output(self, tokens: Tensor) -> Tensor:
+        for c in self.conditioners:
+            tokens = c.add_to_output(tokens)
+        return tokens
+
+    def after_kpe_built(self, kpe: nn.Module) -> None:
+        for c in self.conditioners:
+            c.after_kpe_built(kpe)
+
+
 # --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
@@ -282,7 +322,7 @@ class CoordConvConditioner(PatchConditioner):
 
 def conditioner_extra_in_channels(cfg: PatchConditioningConfig) -> int:
     """Channels the conditioning appends to the sensor (needed before kpe is built)."""
-    if cfg.mode == "coordconv":
+    if cfg.mode in ("coordconv", "coordconv_film"):
         return len(cfg.coordconv.channels)
     return 0
 
@@ -311,4 +351,13 @@ def create_conditioner(
         return FiLMConditioner(cfg.film, n_patches=n_patches, kpe_out=kpe_out, patch_xyr=patch_xyr)
     if cfg.mode == "coordconv":
         return CoordConvConditioner(cfg.coordconv, sample_xy=sample_xy)
+    if cfg.mode == "coordconv_film":
+        # CoordConv (input channels) + FiLM (output modulation): disjoint hooks.
+        # CoordConv must come first so the appended channels are present when kpe
+        # runs; both are no-ops at init, keeping the composite step-0 identity.
+        patch_xyr = build_coord_features(patch_xy, ["x", "y", "r"])
+        return CompositeConditioner([
+            CoordConvConditioner(cfg.coordconv, sample_xy=sample_xy),
+            FiLMConditioner(cfg.film, n_patches=n_patches, kpe_out=kpe_out, patch_xyr=patch_xyr),
+        ])
     raise ValueError(f"Unknown conditioning mode: {cfg.mode!r}")
