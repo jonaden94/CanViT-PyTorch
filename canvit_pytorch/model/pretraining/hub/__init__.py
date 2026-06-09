@@ -136,6 +136,7 @@ class CanViTForPretrainingHFHub(
         backbone_name: str,
         model_config: dict[str, Any],
         canvas_patch_grid_sizes: list[int],
+        glimpse_grid_size: int | None = None,
     ):
         # Coerce nested patcher dict → dataclass for foveated / square
         # checkpoints. upload_to_hf serializes the config via asdict (flattens
@@ -182,3 +183,11 @@ class CanViTForPretrainingHFHub(
             backbone_name=backbone_name,
             canvas_patch_grid_sizes=canvas_patch_grid_sizes,
         )
+        # Glimpse token-grid side (tokens per glimpse edge) the model was trained
+        # with. The trained pixel glimpse size is ``glimpse_grid_size *
+        # backbone.patch_size_px`` (see CanViT-pretrain train/model.py). Persisted
+        # so downstream eval can crop glimpses at the SAME pixel size the model
+        # saw in training, for ANY patch size -- not a hardcoded constant. ``None``
+        # (older checkpoints that predate this field) -> callers fall back to the
+        # canonical default of 8.
+        self.glimpse_grid_size = glimpse_grid_size
