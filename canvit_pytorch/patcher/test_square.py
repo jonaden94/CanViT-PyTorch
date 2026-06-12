@@ -43,15 +43,20 @@ pytestmark = pytest.mark.skipif(
 FOVI_KW = dict(
     fov=16.0, cmf_a=2.785765, resolution=32, style="isotropic",
     cart_patch_size=8, sample_cortex=True, fixation_size=128,
+    # Build the pattern at the deploy window (pattern_reference_size now defaults
+    # to 512; pin it to fixation_size so these tests exercise the intended small
+    # window, as they did under the old None->fixation_size fallback).
+    pattern_reference_size=128,
 )
 CFGS = {
     "fovi": SquarePatcherConfig(method="fovi", **FOVI_KW),
     "fovi_regularized": SquarePatcherConfig(method="fovi_regularized", **FOVI_KW),
     # fixation_size (64) < the strided receptive field (~103 px) so peripheral
-    # samples fall outside the window and exercise the padding path.
+    # samples fall outside the window and exercise the padding path. Pattern
+    # reference pinned to that same 64-px window (see FOVI_KW note).
     "strided": SquarePatcherConfig(
         method="strided", grid_size_fovea=2, patch_size=6,
-        edge_length_multipliers=[2, 6], fixation_size=64,
+        edge_length_multipliers=[2, 6], fixation_size=64, pattern_reference_size=64,
     ),
 }
 EMBED_DIM = 32
@@ -245,3 +250,43 @@ def test_uniform_unaffected(backbone):
     """Uniform mode still introduces no patcher.* state_dict keys."""
     model = CanViT(backbone=backbone, cfg=CanViTConfig()).eval()
     assert [k for k in model.state_dict() if k.startswith("patcher")] == []
+
+
+# --------------------------------------------------------------------------- #
+# Ring pruning (min_ring_new_pixels)
+# --------------------------------------------------------------------------- #
+
+# Strongly-foveated geometry source so the inner rings oversample below the
+# 512-px reference grid and get pruned (mirrors the foveated patcher test).
+PRUNING_KW = dict(
+    method="fovi", fov=180.0, cmf_a=0.5, resolution=36, style="isotropic",
+    cart_patch_size=6, sample_cortex=True, fixation_size=128,
+    force_patches_less_than_matched=False,
+)
+
+
+def test_prune_disabled_is_noop_square():
+    """min_ring_new_pixels=0 keeps all patches regardless of pattern_reference_size."""
+    p_a = _patcher(SquarePatcherConfig(min_ring_new_pixels=0, pattern_reference_size=512, **PRUNING_KW))
+    p_b = _patcher(SquarePatcherConfig(min_ring_new_pixels=0, pattern_reference_size=999, **PRUNING_KW))
+    assert p_a.n_patches == p_b.n_patches
+    assert torch.equal(p_a._patch_xy, p_b._patch_xy)
+
+
+def test_prune_reduces_patches_square():
+    base = _patcher(SquarePatcherConfig(min_ring_new_pixels=0, **PRUNING_KW))
+    pruned = _patcher(SquarePatcherConfig(min_ring_new_pixels=40, pattern_reference_size=512, **PRUNING_KW))
+    assert 0 < pruned.n_patches < base.n_patches
+    # Every per-patch buffer is subset consistently to the pruned count.
+    assert pruned._patch_rowcol.shape == (pruned.n_patches, 2)
+    assert pruned._patch_xy.shape == (pruned.n_patches, 2)
+    assert pruned._pad_mask.shape == (pruned.n_patches, pruned._k)
+    assert pruned._ring_idx.shape == (pruned.n_patches,)
+    assert pruned._sample_colrow.shape == (1, 1, pruned.n_patches * pruned._k, 2)
+    gpx = PRUNING_KW["fixation_size"]
+    image = torch.randn(2, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=2, device=image.device)
+    with torch.inference_mode():
+        patches, scene_pos = pruned(image, vp)
+    assert patches.shape == (2, pruned.n_patches, EMBED_DIM)
+    assert scene_pos.shape == (2, pruned.n_patches, 2)

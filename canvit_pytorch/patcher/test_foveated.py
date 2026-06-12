@@ -147,6 +147,84 @@ def test_uniform_state_dict_no_patcher_keys(backbone):
     )
 
 
+# --------------------------------------------------------------------------- #
+# Ring pruning (min_ring_new_pixels)
+# --------------------------------------------------------------------------- #
+
+# A strongly-foveated config whose innermost rings oversample below the 512-px
+# reference grid, so they get pruned at min_ring_new_pixels=40 (26 -> 21 here).
+PRUNING_FOVEATED_CFG = FoveatedPatcherConfig(
+    fov=180.0,
+    cmf_a=0.5,
+    resolution=36,
+    fixation_size=128,
+    style="isotropic",
+    sampler="pooling",
+    cart_patch_size=6,
+    sample_cortex=True,
+)
+
+
+def _fov_cfg(**over):
+    from dataclasses import replace
+    return replace(PRUNING_FOVEATED_CFG, **over)
+
+
+def test_prune_disabled_is_noop():
+    """min_ring_new_pixels=0 keeps all patches; pattern_reference_size is inert
+    when pruning is off (different ref -> identical patcher)."""
+    p_ref512 = create_patcher("foveated", backbone=create_backbone("vits16"),
+                              foveated_config=_fov_cfg(min_ring_new_pixels=0, pattern_reference_size=512))
+    p_ref999 = create_patcher("foveated", backbone=create_backbone("vits16"),
+                              foveated_config=_fov_cfg(min_ring_new_pixels=0, pattern_reference_size=999))
+    assert p_ref512.n_patches == p_ref999.n_patches
+    assert torch.equal(p_ref512._patch_xy, p_ref999._patch_xy)
+
+
+def test_prune_reduces_patches_and_forward_consistent():
+    base = create_patcher("foveated", backbone=create_backbone("vits16"),
+                          foveated_config=_fov_cfg(min_ring_new_pixels=0))
+    pruned = create_patcher("foveated", backbone=create_backbone("vits16"),
+                            foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512))
+    assert 0 < pruned.n_patches < base.n_patches
+    # buffers + forward stay mutually consistent at the pruned count.
+    assert pruned._patch_rowcol.shape == (pruned.n_patches, 2)
+    assert pruned._patch_xy.shape == (pruned.n_patches, 2)
+    gpx = PRUNING_FOVEATED_CFG.fixation_size
+    image = torch.randn(2, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=2, device=image.device)
+    with torch.inference_mode():
+        patches, scene_pos = pruned(image, vp)
+    assert patches.shape == (2, pruned.n_patches, pruned.embed_dim)
+    assert scene_pos.shape == (2, pruned.n_patches, 2)
+
+
+def test_prune_decision_uses_reference_not_fixation_size():
+    """The kept set is fixed by pattern_reference_size, independent of the
+    (possibly changing) deploy fixation_size."""
+    a = create_patcher("foveated", backbone=create_backbone("vits16"),
+                       foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512,
+                                                fixation_size=128))
+    b = create_patcher("foveated", backbone=create_backbone("vits16"),
+                       foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512,
+                                                fixation_size=256))
+    assert a.n_patches == b.n_patches
+
+
+def test_prune_with_per_ring_kernel():
+    """Pruning composes with per-ring kernels (rings remap, no crash)."""
+    pruned = create_patcher("foveated", backbone=create_backbone("vits16"),
+                            foveated_config=_fov_cfg(min_ring_new_pixels=40, per_ring_kernel=True))
+    gpx = PRUNING_FOVEATED_CFG.fixation_size
+    image = torch.randn(1, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=1, device=image.device)
+    with torch.inference_mode():
+        patches, _ = pruned(image, vp)
+    assert patches.shape[1] == pruned.n_patches
+    # one weight slab per surviving ring
+    assert pruned.kpe.weight.shape[0] == pruned.kpe.n_rings
+
+
 def test_to_migrates_fovi_state(foveated_patcher):
     """``.to(device)`` must migrate fovi's plain-attribute tensors.
 

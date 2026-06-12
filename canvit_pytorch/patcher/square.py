@@ -90,18 +90,27 @@ class SquarePatcherConfig:
     """Side length (px) of the foveation window used at *deploy* time (forward):
     the frozen pattern is mapped into this window. Default 512 == the default
     ``scene_resolution`` (full-image foveation)."""
-    pattern_reference_size: int | None = None
+    pattern_reference_size: int | None = 512
     """Reference window size (px) the frozen sampling pattern is *built* against,
     decoupled from the deploy ``fixation_size``. Used by ``fovi_regularized``
     (the integer-pixel snapping grid) and ``strided`` (the visual-field scale and
-    the out-of-window pad threshold); **ignored by** ``fovi`` (its geometry and
-    padding are reference-independent). Pinning it to a fixed value makes the
-    frozen pattern — and its padded-FOV bound — invariant to the chosen
-    ``fixation_size`` (so one pattern can be deployed at different fixation sizes
-    / zooms). ``None`` (default) falls back to ``fixation_size``, reproducing the
-    original behavior exactly. For ``fovi_regularized``, integer-pixel alignment
-    is exact only when the deploy ``fixation_size`` equals this reference; at
-    other sizes the frozen pattern is rescaled (sample coincidences preserved)."""
+    the out-of-window pad threshold); **ignored for geometry by** ``fovi`` (its
+    geometry and padding are reference-independent). Also the scale at which
+    ``min_ring_new_pixels`` pixel-coverage pruning is reckoned (all methods).
+    Pinning it to a fixed value makes the frozen pattern — and its padded-FOV
+    bound and pruned token set — invariant to the chosen ``fixation_size`` (so
+    one pattern can be deployed at different fixation sizes / zooms). Default
+    512; ``None`` falls back to ``fixation_size``. For ``fovi_regularized``,
+    integer-pixel alignment is exact only when the deploy ``fixation_size``
+    equals this reference; at other sizes the frozen pattern is rescaled (sample
+    coincidences preserved)."""
+    min_ring_new_pixels: int = 0
+    """Prune every patch whose concentric ring contributes fewer than this many
+    *new* image pixels (not already covered by an outer ring) at the
+    ``pattern_reference_size`` scale — the ``ring_pixel_stats`` "new_pixel" metric
+    from ``fovi/notebooks/fovi_square_patches/fovi_plus_square_patches.ipynb``.
+    ``0`` (default) disables pruning and is bit-identical to the unpruned pattern.
+    Drops whole rings; mirrors ``FoveatedPatcherConfig.min_ring_new_pixels``."""
     hidden_dims_patch_embed: list[int] = field(default_factory=list)
     """Hidden widths for an MLP patch embedding (see ``build_embed_head``).
     Empty (default) -> the linear embed maps straight to ``embed_dim``."""
@@ -230,6 +239,27 @@ class SquarePatcher(Patcher):
         dev = torch.device(device) if isinstance(device, str) else device
 
         pattern = _build_pattern(cfg, dev)
+
+        # Optional ring pruning: drop patches whose ring adds fewer than
+        # `min_ring_new_pixels` new pixels at the `pattern_reference_size` scale
+        # (the notebook's ring_pixel_stats metric). Done on the frozen pattern
+        # before any buffer is built, so every downstream array (sample grid,
+        # positions, pad mask, FiLM, trunk modulation) is the pruned set. `0`
+        # disables it (bit-identical to the unpruned pattern).
+        if cfg.min_ring_new_pixels > 0:
+            from fovi.sensing.square import square_ring_keep_mask
+
+            ref_size = (
+                cfg.pattern_reference_size
+                if cfg.pattern_reference_size is not None
+                else cfg.fixation_size
+            )
+            keep = square_ring_keep_mask(
+                pattern, reference_size=ref_size, min_new_pixels=cfg.min_ring_new_pixels
+            )
+            if not bool(keep.all()):
+                pattern = pattern.subset(keep)
+
         self._n_patches = pattern.n_patches
         self._k = pattern.k
         self._side = pattern.side

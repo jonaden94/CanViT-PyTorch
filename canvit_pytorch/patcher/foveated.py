@@ -101,6 +101,24 @@ class FoveatedPatcherConfig:
     on the fovi config) but no extra FLOPs. Shared-kernel-identical at init, so
     ``False`` (default) and a freshly-toggled ``True`` start from the same point.
     Only meaningful for the foveated (KNNPartitioning) embedding."""
+    pattern_reference_size: int | None = 512
+    """Reference window size (px) at which per-ring pixel coverage is reckoned
+    for ``min_ring_new_pixels`` pruning. Decoupled from the deploy
+    ``fixation_size`` (which may change / be sampled), so the pruned token set is
+    fixed at construction. Default 512; ``None`` falls back to ``fixation_size``.
+    Has **no other effect** on the foveated geometry (which is
+    reference-independent) — it is only consulted when pruning is enabled, at
+    which point it becomes architecturally significant (it determines how many
+    patches survive)."""
+    min_ring_new_pixels: int = 0
+    """Prune every patch whose eccentricity ring contributes fewer than this many
+    *new* image pixels (pixels not already covered by an outer ring) at the
+    ``pattern_reference_size`` scale — the per-ring "new_pixel" metric from
+    ``fovi/notebooks/fovi_square_patches/fovi_plus_square_patches.ipynb``. The
+    innermost rings of a strongly-foveated sensor oversample below the pixel grid
+    and add ~0 new pixels, so they can be dropped with no loss of pixel coverage.
+    ``0`` (default) disables pruning and is bit-identical to the unpruned
+    embedding. Drops whole rings (the decision is per-ring)."""
 
 
 def _require_fovi() -> None:
@@ -193,6 +211,27 @@ class FoveatedPatcher(Patcher):
             per_ring_kernel=cfg.per_ring_kernel,
             device=str(dev),
         )
+
+        # Optional ring pruning: drop patches whose eccentricity ring adds fewer
+        # than `min_ring_new_pixels` new pixels at the `pattern_reference_size`
+        # scale (the per-ring redundancy metric from the fovi square-patches
+        # notebook). Done here — after kpe construction, before caching positions
+        # / building the conditioner — so every downstream consumer (positions,
+        # RoPE scene_pos, FiLM, trunk modulation) sees the pruned patch set.
+        # `0` disables it and leaves the embedding bit-identical (no mask is even
+        # computed); `prune_output_coords` is itself a no-op for an all-keep mask.
+        if cfg.min_ring_new_pixels > 0:
+            from fovi.sensing.square import fovi_ring_keep_mask
+
+            ref_size = (
+                cfg.pattern_reference_size
+                if cfg.pattern_reference_size is not None
+                else cfg.fixation_size
+            )
+            keep = fovi_ring_keep_mask(
+                self.kpe, reference_size=ref_size, min_new_pixels=cfg.min_ring_new_pixels
+            )
+            self.kpe.prune_output_coords(keep)
 
         # Cache patch positions (visual-field frame, [-1, 1]^2, (row, col)).
         # Registered as a buffer so .to(device) keeps them in lockstep with

@@ -6,6 +6,7 @@ generator in isolation and the end-to-end no-op-at-init property of the
 """
 
 import importlib.util
+from dataclasses import replace
 
 import pytest
 import torch
@@ -156,6 +157,42 @@ def test_modulation_noop_at_init_foveated():
                         vit_modulation=ViTModulationConfig(enabled=True, modulate_cross_attn=True))
     mod = CanViT(backbone=create_backbone("vits16_modulate"), cfg=mcfg).eval()
     mod.load_state_dict(std.state_dict(), strict=False)
+
+    gpx = fov.fixation_size
+    img = torch.randn(2, 3, gpx, gpx)
+    vp = Viewpoint.full_scene(batch_size=2, device=img.device)
+
+    def run(m):
+        st = m.init_state(batch_size=2, canvas_grid_size=CANVAS_GRID)
+        with torch.inference_mode():
+            return m(image=img, state=st, viewpoint=vp, canvas_grid_size=CANVAS_GRID)
+
+    o_std, o_mod = run(std), run(mod)
+    assert torch.allclose(o_std.local_patches, o_mod.local_patches, atol=1e-5)
+    assert torch.allclose(o_std.state.canvas, o_mod.state.canvas, atol=1e-5)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("fovi") is None, reason="fovi not installed")
+def test_modulation_noop_at_init_foveated_pruned():
+    """No-op-at-init still holds when ring pruning removes patches: the trunk /
+    cross-attn modulation adapts to the pruned token count automatically."""
+    fov = FoveatedPatcherConfig(
+        fov=180.0, cmf_a=0.5, resolution=36, fixation_size=128, style="isotropic",
+        sampler="pooling", cart_patch_size=6, sample_cortex=True,
+        min_ring_new_pixels=40, pattern_reference_size=512,
+    )
+    std = CanViT(backbone=create_backbone("vits16"),
+                 cfg=CanViTConfig(patcher_name="foveated", foveated_patcher=fov)).eval()
+    mcfg = CanViTConfig(patcher_name="foveated", foveated_patcher=fov,
+                        vit_modulation=ViTModulationConfig(enabled=True, modulate_cross_attn=True))
+    mod = CanViT(backbone=create_backbone("vits16_modulate"), cfg=mcfg).eval()
+    mod.load_state_dict(std.state_dict(), strict=False)
+
+    # pruning actually fired (fewer patches than the unpruned build)
+    unpruned = CanViT(backbone=create_backbone("vits16"),
+                      cfg=CanViTConfig(patcher_name="foveated",
+                                       foveated_patcher=replace(fov, min_ring_new_pixels=0))).eval()
+    assert mod.patcher.n_patches < unpruned.patcher.n_patches
 
     gpx = fov.fixation_size
     img = torch.randn(2, 3, gpx, gpx)
