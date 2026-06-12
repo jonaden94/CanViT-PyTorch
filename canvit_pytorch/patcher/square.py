@@ -26,7 +26,7 @@ out-of-image patches become normal tokens placed by RoPE at ``|scene_pos| > 1``,
 identical to ``FoveatedPatcher``.
 
 This patcher reuses the embed-head MLP (:func:`canvit_pytorch.patcher.embed
-.build_embed_head`) and the FiLM / learned-bias conditioners
+.build_embed_head`) and the FiLM conditioner
 (:mod:`canvit_pytorch.patcher.conditioning`). CoordConv conditioning is not
 supported (its kernel-weight surgery is specific to the KNN-conv embed) and is
 rejected at construction.
@@ -274,15 +274,13 @@ class SquarePatcher(Patcher):
         else:
             self.pad_value = None
 
-        # Position-conditioning (FiLM / learned bias / none). Fovea-centric
-        # (x, y) for samples and patch centers, constant across batch/fixation.
+        # Position-conditioning (FiLM / none). Fovea-centric (x, y) for samples
+        # and patch centers, constant across batch/fixation.
         sample_xy = pattern.positions_xy.reshape(-1, 2).detach().clone().to(torch.float32)
         patch_xy = pattern.centers_xy.detach().clone().to(torch.float32)
         self.conditioner = create_conditioner(
             cfg.conditioning,
-            n_patches=self._n_patches,
             kpe_out=kpe_embed_dim,
-            embed_dim=embed_dim,
             sample_xy=sample_xy,
             patch_xy=patch_xy,
         ).to(dev)
@@ -383,7 +381,6 @@ class SquarePatcher(Patcher):
         x = self.embed(x)                                   # [B, P, kpe_embed_dim]
         x = self.conditioner.modulate_kpe_output(x)         # FiLM (identity if unused)
         x = self.embed_head(x)                              # [B, P, embed_dim]
-        x = self.conditioner.add_to_output(x)               # learned per-patch bias
 
         # Scene positions: same window-to-image mapping as FoveatedPatcher.
         fix_size_norm = float(fix_size) / float(H)

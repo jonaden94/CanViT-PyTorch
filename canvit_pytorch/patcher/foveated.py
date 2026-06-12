@@ -155,9 +155,7 @@ class FoveatedPatcher(Patcher):
 
         # Retinal sampling: ``start_res`` / ``fixation_size`` set fovi's
         # reference at construction time; at forward time we pass
-        # ``fixation_size=image_H`` so the fixation always covers the full
-        # image (the caller is expected to keep ``cfg.fixation_size`` in sync
-        # with the image side length used at runtime).
+        # ``fixation_size=cfg.fixation_size`` (a fixed config value, not image_H).
         self.retina = RetinalTransform(
             resolution=cfg.resolution,
             start_res=cfg.fixation_size,
@@ -214,9 +212,7 @@ class FoveatedPatcher(Patcher):
         patch_xy = self.kpe.out_coords.cartesian.detach().clone().to(torch.float32)
         self.conditioner = create_conditioner(
             cfg.conditioning,
-            n_patches=self.n_patches,
             kpe_out=kpe_embed_dim,
-            embed_dim=embed_dim,
             sample_xy=sample_xy,
             patch_xy=patch_xy,
         ).to(dev)
@@ -340,7 +336,6 @@ class FoveatedPatcher(Patcher):
         patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
         patches = self.conditioner.modulate_kpe_output(patches)  # FiLM
         patches = self.embed_head(patches)  # [B, N_patches, embed_dim] (identity if no MLP)
-        patches = self.conditioner.add_to_output(patches)  # learned per-patch bias
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.
         # Convert visual-field rowcol (normalized to the fixation window) to

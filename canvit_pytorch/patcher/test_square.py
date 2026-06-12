@@ -6,7 +6,7 @@ Covers, across the three sampling-pattern methods (``fovi`` /
   - Position-frame correctness: full-scene viewpoint -> scene_pos == patch
     rowcol; off-center viewpoint shifts scene_pos by viewpoint.centers (same
     contract as the foveated patcher).
-  - Optional FiLM / learned-bias conditioning and learned padding are no-ops at
+  - Optional FiLM conditioning and learned padding are no-ops at
     init (output identical to the unconditioned / zero-padding patcher).
   - CoordConv conditioning is rejected.
   - ``.to(dtype)`` migrates the cached buffers.
@@ -128,11 +128,13 @@ def test_strided_has_padding():
     assert int(p._pad_mask.sum()) > 0
 
 
-def test_conditioning_film_noop_at_init():
-    """FiLM conditioning is a no-op at init (zero-init final layer)."""
+@pytest.mark.parametrize("encoding", ["fourier", "sinusoidal"])
+def test_conditioning_film_noop_at_init(encoding):
+    """FiLM conditioning is a no-op at init (zero-init final layer), for both
+    the Fourier and sinusoidal position encoders."""
     base = _patcher(CFGS["fovi"])
     cfg = copy.deepcopy(CFGS["fovi"])
-    cfg.conditioning = PatchConditioningConfig(mode="film", film=FiLMConfig())
+    cfg.conditioning = PatchConditioningConfig(mode="film", film=FiLMConfig(encoding=encoding))
     cond = SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
     # Share the (randomly-initialized) embed + head so only conditioning differs.
     cond.embed.load_state_dict(base.embed.state_dict())
@@ -183,8 +185,7 @@ def test_pad_mask_applied_under_zero_padding():
         x = samp.permute(0, 2, 1, 3).reshape(B, P, C * K)
         x = p.embed(x)
         x = p.conditioner.modulate_kpe_output(x)
-        x = p.embed_head(x)
-        return p.conditioner.add_to_output(x)
+        return p.embed_head(x)
 
     with torch.inference_mode():
         out, _ = p(img, vp)
