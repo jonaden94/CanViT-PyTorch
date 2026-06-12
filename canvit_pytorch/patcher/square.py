@@ -206,6 +206,7 @@ class SquarePatcher(Patcher):
     _sample_colrow: Tensor  # [1, 1, P*K, 2] grid_sample-frame (x, y) at fixation (0.5, 0.5)
     _patch_rowcol: Tensor   # [P, 2] visual-field (row, col)
     _pad_mask: Tensor       # [P, K] bool, True = out-of-field sample
+    _patch_xy: Tensor       # [P, 2] fovea-centric (x, y); trunk-modulation signal
 
     def __init__(
         self,
@@ -278,6 +279,8 @@ class SquarePatcher(Patcher):
         # and patch centers, constant across batch/fixation.
         sample_xy = pattern.positions_xy.reshape(-1, 2).detach().clone().to(torch.float32)
         patch_xy = pattern.centers_xy.detach().clone().to(torch.float32)
+        # Cache fovea-centric (x, y) for trunk/cross-attn modulation (constant).
+        self.register_buffer("_patch_xy", patch_xy, persistent=False)
         self.conditioner = create_conditioner(
             cfg.conditioning,
             kpe_out=kpe_embed_dim,
@@ -288,6 +291,9 @@ class SquarePatcher(Patcher):
     @property
     def n_patches(self) -> int:
         return self._n_patches
+
+    def patch_positions(self) -> Tensor:
+        return self._patch_xy
 
     @property
     def fixation_size(self) -> int:

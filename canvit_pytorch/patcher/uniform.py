@@ -11,10 +11,11 @@ the input tensor as the already-cropped glimpse. This keeps the existing
 ``clf(glimpse=...)`` / ``seg(glimpse=...)`` call sites working unchanged.
 """
 
+import torch
 from torch import Tensor
 
 from canvit_pytorch.backbone.vit import ViTBackbone
-from canvit_pytorch.coords import canvas_coords_for_glimpse
+from canvit_pytorch.coords import canvas_coords_for_glimpse, grid_coords
 from canvit_pytorch.patcher.base import Patcher
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
 
@@ -61,3 +62,16 @@ class UniformPatcher(Patcher):
             W=W,
         ).flatten(1, 2)  # [B, H*W, 2]
         return patches, scene_pos
+
+    def patch_positions(self) -> Tensor:
+        if self.glimpse_size_px is None:
+            raise NotImplementedError(
+                "UniformPatcher with glimpse_size_px=None has a variable glimpse "
+                "grid; trunk modulation needs a fixed per-patch layout."
+            )
+        g = self.glimpse_size_px // self.backbone.patch_size_px
+        # grid_coords is (y, x); flip to fovea-centric (x, y) to match the
+        # foveated/square conditioning convention. This is the constant
+        # (center=0, scale=1) canonical grid.
+        rc = grid_coords(H=g, W=g, device=torch.device("cpu"))  # [g, g, 2] (y, x)
+        return rc.flatten(0, 1)[:, [1, 0]].contiguous()  # [g*g, 2] (x, y)

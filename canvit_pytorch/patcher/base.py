@@ -34,3 +34,15 @@ class Patcher(nn.Module):
 
     def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
         raise NotImplementedError
+
+    def patch_positions(self) -> Tensor:
+        """Constant fovea-centric patch-center positions ``[N, 2]`` as ``(x, y)``
+        in ~``[-1, 1]`` (origin = fixation).
+
+        Used as the conditioning signal for transformer-trunk / cross-attn
+        modulation; fixed across batch and viewpoint. Patchers without a fixed
+        per-patch layout (e.g. uniform with a variable glimpse grid) raise.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide patch_positions()"
+        )

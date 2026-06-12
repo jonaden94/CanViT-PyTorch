@@ -122,6 +122,7 @@ class FoveatedPatcher(Patcher):
     """
 
     _patch_rowcol: Tensor  # [N, 2] in [-1, 1]^2, (row, col)
+    _patch_xy: Tensor      # [N, 2] fovea-centric (x, y); trunk-modulation signal
 
     def __init__(
         self,
@@ -210,6 +211,8 @@ class FoveatedPatcher(Patcher):
         # and given a chance to touch kpe weights (CoordConv no-op-at-init).
         sample_xy = self.kpe.in_coords.cartesian.detach().clone().to(torch.float32)
         patch_xy = self.kpe.out_coords.cartesian.detach().clone().to(torch.float32)
+        # Cache fovea-centric (x, y) for trunk/cross-attn modulation (constant).
+        self.register_buffer("_patch_xy", patch_xy, persistent=False)
         self.conditioner = create_conditioner(
             cfg.conditioning,
             kpe_out=kpe_embed_dim,
@@ -221,6 +224,9 @@ class FoveatedPatcher(Patcher):
     @property
     def n_patches(self) -> int:
         return int(self._patch_rowcol.shape[0])
+
+    def patch_positions(self) -> Tensor:
+        return self._patch_xy
 
     def _apply(self, fn: Callable[[Tensor], Tensor], recurse: bool = True) -> "FoveatedPatcher":
         out = super()._apply(fn, recurse=recurse)
