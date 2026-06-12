@@ -17,6 +17,7 @@ from canvit_pytorch.attention import (
 from canvit_pytorch.backbone.vit import ViTBackbone
 from canvit_pytorch.coords import grid_coords
 from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.modulation import Modulation, TokenModulation
 from canvit_pytorch.patcher import Patcher, create_patcher
 from canvit_pytorch.rope import RoPE, compute_rope, make_rope_periods
 from canvit_pytorch.viewpoint import Viewpoint
@@ -192,6 +193,33 @@ class CanViT(nn.Module):
             self.vpe = VPEEncoder(rff_dim=local_dim)
             log.info("VPE enabled")
 
+        # Per-token trunk/cross-attn modulation (adaLN-style). Built only when
+        # configured; requires a "*_modulate" backbone. Consistency is enforced
+        # both ways so the two settings can't drift apart.
+        self.token_modulation: TokenModulation | None = None
+        if cfg.vit_modulation.enabled:
+            assert backbone.modulated, (
+                "cfg.vit_modulation.enabled but the backbone is not a '*_modulate' variant"
+            )
+            n_prefix = (1 if cfg.enable_vpe else 0) + 1 + cfg.n_backbone_registers
+            self.token_modulation = TokenModulation(
+                cfg.vit_modulation,
+                embed_dim=local_dim,
+                n_blocks=n_blocks,
+                n_prefix=n_prefix,
+                n_read=len(read_after),
+                n_write=len(write_after),
+            )
+            log.info(
+                "ViT modulation: encoding=%s base_dim=%s cross_attn=%s",
+                cfg.vit_modulation.encoding, cfg.vit_modulation.base_dim,
+                cfg.vit_modulation.modulate_cross_attn,
+            )
+        else:
+            assert not backbone.modulated, (
+                "backbone is a '*_modulate' variant but cfg.vit_modulation.enabled is False"
+            )
+
     @property
     def canvas_dim(self) -> int:
         return self.cfg.canvas_dim
@@ -234,6 +262,7 @@ class CanViT(nn.Module):
         viewpoint: Viewpoint,
         canvas_grid_size: int | None = None,
         canvas_rope: RoPE | None = None,
+        modulation: Modulation | None = None,
     ) -> CanViTOutput:
         B = image.shape[0]
         recurrent_cls = state.recurrent_cls
@@ -280,22 +309,32 @@ class CanViT(nn.Module):
             spatial_pos = self._get_spatial_positions(canvas, canvas_grid_size).unsqueeze(0).expand(B, -1, -1)
             spatial_rope = compute_rope(positions=spatial_pos, periods=canvas_periods)
 
+        # Per-token modulation: use the hoisted bundle if provided (forward_reduce
+        # computes it once per step), else compute it here (standalone forward).
+        # Constant across glimpses, so recomputing is only redundant, never wrong.
+        mod = modulation
+        if self.token_modulation is not None and mod is None:
+            mod = self.token_modulation(self.patcher.patch_positions())
+
         read_idx = 0
         write_idx = 0
 
         for block_idx in range(self.backbone.n_blocks):
-            local = self.backbone.blocks[block_idx](local, local_rope_backbone)
+            block_mod = mod.block[block_idx] if mod is not None else None
+            local = self.backbone.blocks[block_idx](local, local_rope_backbone, block_mod)
 
             if read_idx < len(self.read_after_blocks) and block_idx == self.read_after_blocks[read_idx]:
+                read_mod = mod.read[read_idx] if (mod is not None and mod.read) else None
                 read_out = self.canvas_read[read_idx](
-                    query=local, kv=canvas, query_rope=local_rope_xattn, kv_rope=spatial_rope
+                    query=local, kv=canvas, query_rope=local_rope_xattn, kv_rope=spatial_rope, mod=read_mod
                 )
                 local = local + read_out
                 read_idx += 1
 
             if write_idx < len(self.write_after_blocks) and block_idx == self.write_after_blocks[write_idx]:
+                write_mod = mod.write[write_idx] if (mod is not None and mod.write) else None
                 write_out = self.canvas_write[write_idx](
-                    query=canvas, kv=local, query_rope=spatial_rope, kv_rope=local_rope_xattn
+                    query=canvas, kv=local, query_rope=spatial_rope, kv_rope=local_rope_xattn, mod=write_mod
                 )
                 canvas = write_out if self.cfg.canvas_update_mode == "convex" else canvas + write_out
                 write_idx += 1
@@ -332,8 +371,14 @@ class CanViT(nn.Module):
 
         acc = init_fn(state)
 
+        # Hoist the (glimpse-invariant) modulation out of the viewpoint loop:
+        # compute it once per step and reuse it for every glimpse.
+        mod: Modulation | None = None
+        if self.token_modulation is not None:
+            mod = self.token_modulation(self.patcher.patch_positions())
+
         for vp in viewpoints:
-            out = self.forward(image=image, state=state, viewpoint=vp)
+            out = self.forward(image=image, state=state, viewpoint=vp, modulation=mod)
             state = out.state
             acc = step_fn(acc, out, vp)
 

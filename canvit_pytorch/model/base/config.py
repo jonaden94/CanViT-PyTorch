@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+from canvit_pytorch.modulation import ViTModulationConfig
 from canvit_pytorch.patcher import FoveatedPatcherConfig, PatcherName, SquarePatcherConfig
 
 
@@ -28,6 +29,11 @@ class CanViTConfig:
     patcher_name: PatcherName = "uniform"
     foveated_patcher: FoveatedPatcherConfig = field(default_factory=FoveatedPatcherConfig)
     square_patcher: SquarePatcherConfig = field(default_factory=SquarePatcherConfig)
+    # Per-token adaLN-style modulation of the transformer trunk (and optionally
+    # the read/write cross-attn). Disabled by default (current behavior). When
+    # `vit_modulation.enabled`, the backbone must be a "*_modulate" variant
+    # (enforced at construction); the two settings go together.
+    vit_modulation: ViTModulationConfig = field(default_factory=ViTModulationConfig)
 
     def __post_init__(self) -> None:
         is_convex = self.canvas_update_mode == "convex"

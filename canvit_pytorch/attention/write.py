@@ -17,6 +17,8 @@ class CanvasWriteAttention(CanvasAttention):
     Standard SDPA only (flash-compatible, no V dim mismatch).
     """
 
+    _mod_side = "kv"  # kv is the local stream
+
     def __init__(
         self,
         *,
@@ -52,12 +54,13 @@ class CanvasWriteAttention(CanvasAttention):
         kv: Tensor,
         query_rope: RoPE,
         kv_rope: RoPE,
+        mod: Tensor | None = None,
     ) -> Tensor:
         if self.gate_linear is None:
-            return super().forward(query=query, kv=kv, query_rope=query_rope, kv_rope=kv_rope)
+            return super().forward(query=query, kv=kv, query_rope=query_rope, kv_rope=kv_rope, mod=mod)
 
-        q = to_multihead(self.q_proj(self.q_norm(query)), self.num_heads)
-        kv_normed = self.kv_norm(kv)
+        qn, kv_normed, _ = self._apply_local_mod(self.q_norm(query), self.kv_norm(kv), mod)
+        q = to_multihead(self.q_proj(qn), self.num_heads)
         k = to_multihead(self.k_proj(kv_normed), self.num_heads)
         v = to_multihead(self.v_proj(kv_normed), self.num_heads)
 

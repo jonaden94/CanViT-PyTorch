@@ -13,6 +13,8 @@ class CanvasReadAttention(CanvasAttention):
     Local is projected up to canvas_dim for attention, output projected back to local_dim.
     """
 
+    _mod_side = "q"  # query is the local stream
+
     def __init__(
         self,
         *,
