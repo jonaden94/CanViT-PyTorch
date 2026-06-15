@@ -42,21 +42,19 @@ pytestmark = pytest.mark.skipif(
 # foveated test's SMALL config so the geometry source is cheap to build.
 FOVI_KW = dict(
     fov=16.0, cmf_a=2.785765, resolution=32, style="isotropic",
-    cart_patch_size=8, sample_cortex=True, fixation_size=128,
-    # Build the pattern at the deploy window (pattern_reference_size now defaults
-    # to 512; pin it to fixation_size so these tests exercise the intended small
-    # window, as they did under the old None->fixation_size fallback).
+    cart_patch_size=8, sample_cortex=True,
+    # Image size fed in these tests == pattern_reference_size, so a scale=1
+    # viewpoint deploys the pattern at its build window.
     pattern_reference_size=128,
 )
 CFGS = {
     "fovi": SquarePatcherConfig(method="fovi", **FOVI_KW),
     "fovi_regularized": SquarePatcherConfig(method="fovi_regularized", **FOVI_KW),
-    # fixation_size (64) < the strided receptive field (~103 px) so peripheral
-    # samples fall outside the window and exercise the padding path. Pattern
-    # reference pinned to that same 64-px window (see FOVI_KW note).
+    # Pattern built at a 64-px reference < the strided receptive field (~103 px),
+    # so peripheral samples fall outside the window and exercise the padding path.
     "strided": SquarePatcherConfig(
         method="strided", grid_size_fovea=2, patch_size=6,
-        edge_length_multipliers=[2, 6], fixation_size=64, pattern_reference_size=64,
+        edge_length_multipliers=[2, 6], pattern_reference_size=64,
     ),
 }
 EMBED_DIM = 32
@@ -80,7 +78,7 @@ def test_buffers_and_npatches(method):
 def test_forward_shapes(method):
     cfg = CFGS[method]
     p = _patcher(cfg)
-    B, gpx = 2, cfg.fixation_size
+    B, gpx = 2, cfg.pattern_reference_size
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     with torch.inference_mode():
@@ -95,7 +93,7 @@ def test_scene_positions_full_scene(method):
     """Full-scene viewpoint (centers=0) -> scene_pos == patch rowcol."""
     cfg = CFGS[method]
     p = _patcher(cfg)
-    B, gpx = 3, cfg.fixation_size
+    B, gpx = 3, cfg.pattern_reference_size
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     with torch.inference_mode():
@@ -105,18 +103,19 @@ def test_scene_positions_full_scene(method):
 
 
 @pytest.mark.parametrize("method", list(CFGS))
-def test_scene_positions_translated(method):
-    """Off-center viewpoint shifts scene_pos by viewpoint.centers."""
+def test_scene_positions_scaled_and_translated(method):
+    """scene_pos = centers + scale * rowcol (scale is now honored)."""
     cfg = CFGS[method]
     p = _patcher(cfg)
-    gpx = cfg.fixation_size
+    gpx = cfg.pattern_reference_size
     image = torch.randn(1, 3, gpx, gpx)
     centers = torch.tensor([[0.3, -0.2]], dtype=torch.float32)
-    vp = Viewpoint(centers=centers, scales=torch.tensor([0.4]))
-    with torch.inference_mode():
-        _, scene_pos = p(image, vp)
-    expected = centers.view(1, 1, 2) + p._patch_rowcol.view(1, -1, 2)
-    assert torch.allclose(scene_pos, expected, atol=1e-5)
+    for s in (0.4, 1.0, 1.5):
+        vp = Viewpoint(centers=centers, scales=torch.tensor([s]))
+        with torch.inference_mode():
+            _, scene_pos = p(image, vp)
+        expected = centers.view(1, 1, 2) + s * p._patch_rowcol.view(1, -1, 2)
+        assert torch.allclose(scene_pos, expected, atol=1e-5), f"{method} scale={s}"
 
 
 def test_foveal_patch_near_origin():
@@ -144,7 +143,7 @@ def test_conditioning_film_noop_at_init(encoding):
     # Share the (randomly-initialized) embed + head so only conditioning differs.
     cond.embed.load_state_dict(base.embed.state_dict())
     cond.embed_head.load_state_dict(base.embed_head.state_dict())
-    gpx = cfg.fixation_size
+    gpx = cfg.pattern_reference_size
     image = torch.randn(1, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=1, device=image.device)
     with torch.inference_mode():
@@ -162,7 +161,7 @@ def test_learned_padding_noop_at_init():
     learned.embed.load_state_dict(base.embed.state_dict())
     learned.embed_head.load_state_dict(base.embed_head.state_dict())
     assert learned.pad_value is not None and float(learned.pad_value.detach().abs().sum()) == 0.0
-    gpx = cfg.fixation_size
+    gpx = cfg.pattern_reference_size
     image = torch.randn(1, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=1, device=image.device)
     with torch.inference_mode():
@@ -179,11 +178,11 @@ def test_pad_mask_applied_under_zero_padding():
     import torch.nn.functional as F
     from fovi.sensing.coords import transform_sampling_grid
 
-    p = _patcher(CFGS["strided"])  # fixation_size=64
+    p = _patcher(CFGS["strided"])  # pattern built at pattern_reference_size=64
     assert int(p.pad_mask.sum()) > 0
-    H = 128  # image larger than the 64-px window -> masked samples are in-image
-    img = torch.randn(1, 3, H, H)
-    vp = Viewpoint.full_scene(batch_size=1, device=img.device)
+    H, s = 128, 0.5  # scale=0.5 -> 64-px deploy window < image, so masked
+    img = torch.randn(1, 3, H, H)   # samples land in-image; mask blanks them
+    vp = Viewpoint(centers=torch.zeros(1, 2), scales=torch.full((1,), s))
     B, C, P, K = 1, 3, p.n_patches, p._k
 
     def _embed(samp):
@@ -195,7 +194,7 @@ def test_pad_mask_applied_under_zero_padding():
     with torch.inference_mode():
         out, _ = p(img, vp)
         fix_loc = (vp.centers.float() + 1) * 0.5
-        fst = torch.tensor([[p.fixation_size, p.fixation_size]], dtype=torch.float32)
+        fst = torch.tensor([[s * H, s * H]], dtype=torch.float32)  # fix_size = scale * H
         grid = transform_sampling_grid(p._sample_colrow, fix_loc, fst, (H, H))
         raw = F.grid_sample(img.float(), grid, mode="bilinear", padding_mode="zeros",
                             align_corners=False)[:, :, 0, :].reshape(B, C, P, K)
@@ -235,7 +234,7 @@ def test_create_patcher_square(backbone):
 def test_canvit_end_to_end_square(backbone):
     cfg = CanViTConfig(patcher_name="square", square_patcher=CFGS["strided"])
     model = CanViT(backbone=backbone, cfg=cfg).eval()
-    B, gpx, canvas_grid = 2, CFGS["strided"].fixation_size, 16
+    B, gpx, canvas_grid = 2, CFGS["strided"].pattern_reference_size, 16
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     state = model.init_state(batch_size=B, canvas_grid_size=canvas_grid)
@@ -260,7 +259,7 @@ def test_uniform_unaffected(backbone):
 # 512-px reference grid and get pruned (mirrors the foveated patcher test).
 PRUNING_KW = dict(
     method="fovi", fov=180.0, cmf_a=0.5, resolution=36, style="isotropic",
-    cart_patch_size=6, sample_cortex=True, fixation_size=128,
+    cart_patch_size=6, sample_cortex=True,
     force_patches_less_than_matched=False,
 )
 
@@ -283,7 +282,7 @@ def test_prune_reduces_patches_square():
     assert pruned._pad_mask.shape == (pruned.n_patches, pruned._k)
     assert pruned._ring_idx.shape == (pruned.n_patches,)
     assert pruned._sample_colrow.shape == (1, 1, pruned.n_patches * pruned._k, 2)
-    gpx = PRUNING_KW["fixation_size"]
+    gpx = 128  # any image size; scale=1 -> full image
     image = torch.randn(2, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=2, device=image.device)
     with torch.inference_mode():

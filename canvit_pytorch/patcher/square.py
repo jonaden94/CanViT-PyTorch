@@ -86,24 +86,18 @@ class SquarePatcherConfig:
     edge_length_multipliers: list[int] = field(default_factory=lambda: [2, 6])
 
     # --- shared deploy / embed ----------------------------------------------
-    fixation_size: int = 512
-    """Side length (px) of the foveation window used at *deploy* time (forward):
-    the frozen pattern is mapped into this window. Default 512 == the default
-    ``scene_resolution`` (full-image foveation)."""
-    pattern_reference_size: int | None = 512
+    pattern_reference_size: int = 512
     """Reference window size (px) the frozen sampling pattern is *built* against,
-    decoupled from the deploy ``fixation_size``. Used by ``fovi_regularized``
-    (the integer-pixel snapping grid) and ``strided`` (the visual-field scale and
-    the out-of-window pad threshold); **ignored for geometry by** ``fovi`` (its
-    geometry and padding are reference-independent). Also the scale at which
-    ``min_ring_new_pixels`` pixel-coverage pruning is reckoned (all methods).
-    Pinning it to a fixed value makes the frozen pattern — and its padded-FOV
-    bound and pruned token set — invariant to the chosen ``fixation_size`` (so
-    one pattern can be deployed at different fixation sizes / zooms). Default
-    512; ``None`` falls back to ``fixation_size``. For ``fovi_regularized``,
-    integer-pixel alignment is exact only when the deploy ``fixation_size``
-    equals this reference; at other sizes the frozen pattern is rescaled (sample
-    coincidences preserved)."""
+    decoupled from the deploy window (which is per-forward ``scale * H``). Used by
+    ``fovi_regularized`` (the integer-pixel snapping grid) and ``strided`` (the
+    visual-field scale and the out-of-window pad threshold); **ignored for
+    geometry by** ``fovi`` (its geometry and padding are reference-independent).
+    Also the scale at which ``min_ring_new_pixels`` pixel-coverage pruning is
+    reckoned (all methods). Pinning it to a fixed value makes the frozen pattern
+    — and its padded-FOV bound and pruned token set — invariant to the deploy
+    zoom. For ``fovi_regularized``, integer-pixel alignment is exact only when the
+    deploy window (``scale * H``) equals this reference; at other sizes the frozen
+    pattern is rescaled (sample coincidences preserved)."""
     min_ring_new_pixels: int = 0
     """Prune every patch whose concentric ring contributes fewer than this many
     *new* image pixels (not already covered by an outer ring) at the
@@ -174,12 +168,8 @@ def _build_pattern(cfg: SquarePatcherConfig, device: torch.device | str):
     )
 
     # The pattern is built against a fixed reference window, decoupled from the
-    # deploy fixation_size (None -> fixation_size, i.e. original behavior).
-    ref_size = (
-        cfg.pattern_reference_size
-        if cfg.pattern_reference_size is not None
-        else cfg.fixation_size
-    )
+    # per-forward deploy window (scale * H).
+    ref_size = cfg.pattern_reference_size
     if cfg.method == "strided":
         return build_strided_square(
             grid_size_fovea=cfg.grid_size_fovea,
@@ -249,13 +239,10 @@ class SquarePatcher(Patcher):
         if cfg.min_ring_new_pixels > 0:
             from fovi.sensing.square import square_ring_keep_mask
 
-            ref_size = (
-                cfg.pattern_reference_size
-                if cfg.pattern_reference_size is not None
-                else cfg.fixation_size
-            )
             keep = square_ring_keep_mask(
-                pattern, reference_size=ref_size, min_new_pixels=cfg.min_ring_new_pixels
+                pattern,
+                reference_size=cfg.pattern_reference_size,
+                min_new_pixels=cfg.min_ring_new_pixels,
             )
             if not bool(keep.all()):
                 pattern = pattern.subset(keep)
@@ -326,10 +313,6 @@ class SquarePatcher(Patcher):
         return self._patch_xy
 
     @property
-    def fixation_size(self) -> int:
-        return self.cfg.fixation_size
-
-    @property
     def ring_idx(self) -> Tensor:
         """Per-patch concentric-ring index ``[P]`` (0 = innermost). For
         inspection / visualization (e.g. coloring patches by ring)."""
@@ -359,21 +342,16 @@ class SquarePatcher(Patcher):
         ``n_patches`` / ``samples_per_patch`` (= ``K``); ``n_padded`` = the
         structurally-padded sample slots (the fixation-invariant FOV mask, *not*
         out-of-image padding); ``unique_pixels`` = distinct in-image pixels the
-        *non-padded* samples resolve at the reference scale
-        (``pattern_reference_size`` if set, else ``fixation_size``), centered.
+        *non-padded* samples resolve at the fixed ``pattern_reference_size``
+        scale, centered (the deploy window is per-forward ``scale * H``).
         See :func:`canvit_pytorch.patcher.embed.count_unique_pixels`.
         """
-        ref = (
-            self.cfg.pattern_reference_size
-            if self.cfg.pattern_reference_size is not None
-            else self.cfg.fixation_size
-        )
         non_padded = self.sample_positions_xy()[~self._pad_mask]
         return {
             "n_patches": int(self._n_patches),
             "samples_per_patch": int(self._k),
             "n_padded": int(self._pad_mask.sum()),
-            "unique_pixels": count_unique_pixels(non_padded, ref),
+            "unique_pixels": count_unique_pixels(non_padded, self.cfg.pattern_reference_size),
         }
 
     def forward(self, image: Tensor, viewpoint: Viewpoint) -> tuple[Tensor, Tensor]:
@@ -385,10 +363,11 @@ class SquarePatcher(Patcher):
         P, K = self._n_patches, self._k
 
         # fovi's fix_loc is (row, col) in [0, 1]; viewpoint.centers is (row, col)
-        # in [-1, 1]. Foveation window in pixels = cfg.fixation_size.
+        # in [-1, 1]. Per-sample foveation window: fix_size = scale * H.
         fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
-        fix_size = self.cfg.fixation_size
-        fix_size_t = torch.tensor([[fix_size, fix_size]], dtype=torch.float32, device=image.device)
+        scales = viewpoint.scales.to(torch.float32)  # [B]
+        fix_px = scales * float(H)  # [B]
+        fix_size_t = torch.stack([fix_px, fix_px], dim=-1)  # [B, 2]
 
         abs_grid = transform_sampling_grid(
             self._sample_colrow, fix_loc, fix_size_t, (H, W)
@@ -418,10 +397,10 @@ class SquarePatcher(Patcher):
         x = self.conditioner.modulate_kpe_output(x)         # FiLM (identity if unused)
         x = self.embed_head(x)                              # [B, P, embed_dim]
 
-        # Scene positions: same window-to-image mapping as FoveatedPatcher.
-        fix_size_norm = float(fix_size) / float(H)
+        # Scene positions: same window-to-image mapping as FoveatedPatcher
+        # (fix_size / H == scale, per-sample).
         scene_pos = (
             viewpoint.centers.view(B, 1, 2).to(torch.float32)
-            + fix_size_norm * self._patch_rowcol.view(1, -1, 2)
+            + scales.view(B, 1, 1) * self._patch_rowcol.view(1, -1, 2)
         )  # [B, P, 2]
         return x, scene_pos

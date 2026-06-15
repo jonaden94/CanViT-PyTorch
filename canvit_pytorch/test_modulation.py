@@ -148,7 +148,7 @@ def test_standard_model_unchanged_no_modulation_keys():
 def test_modulation_noop_at_init_foveated():
     """Same no-op-at-init guarantee with the foveated patcher (the real use case)."""
     fov = FoveatedPatcherConfig(
-        fov=16.0, cmf_a=2.785765, resolution=32, fixation_size=128,
+        fov=16.0, cmf_a=2.785765, resolution=32,
         style="isotropic", sampler="grid_nn", cart_patch_size=8, sample_cortex=True,
     )
     std = CanViT(backbone=create_backbone("vits16"),
@@ -158,7 +158,7 @@ def test_modulation_noop_at_init_foveated():
     mod = CanViT(backbone=create_backbone("vits16_modulate"), cfg=mcfg).eval()
     mod.load_state_dict(std.state_dict(), strict=False)
 
-    gpx = fov.fixation_size
+    gpx = 128  # image size; scale=1 -> full-image foveation
     img = torch.randn(2, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=2, device=img.device)
 
@@ -177,7 +177,7 @@ def test_modulation_noop_at_init_foveated_pruned():
     """No-op-at-init still holds when ring pruning removes patches: the trunk /
     cross-attn modulation adapts to the pruned token count automatically."""
     fov = FoveatedPatcherConfig(
-        fov=180.0, cmf_a=0.5, resolution=36, fixation_size=128, style="isotropic",
+        fov=180.0, cmf_a=0.5, resolution=36, style="isotropic",
         sampler="pooling", cart_patch_size=6, sample_cortex=True,
         min_ring_new_pixels=40, pattern_reference_size=512,
     )
@@ -194,7 +194,7 @@ def test_modulation_noop_at_init_foveated_pruned():
                                        foveated_patcher=replace(fov, min_ring_new_pixels=0))).eval()
     assert mod.patcher.n_patches < unpruned.patcher.n_patches
 
-    gpx = fov.fixation_size
+    gpx = 128  # image size; scale=1 -> full-image foveation
     img = torch.randn(2, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=2, device=img.device)
 

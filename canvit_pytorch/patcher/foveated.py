@@ -3,20 +3,23 @@
 Operates on the **full image** (not a pre-cropped glimpse). Foveation is
 anchored at the model's current fixation point, which lives in
 ``viewpoint.centers`` ((row, col) in ``[-1, 1]^2``, image-coord frame). The
-``viewpoint.scales`` field is ignored; the sensor instead covers a window of
-``cfg.fixation_size`` px around the fixation (default = the image side length,
-i.e. full-image foveation; larger zooms out, smaller zooms in).
+foveation window is set per forward by ``viewpoint.scales``: the sensor covers
+a window of ``fix_size = scale * H`` px around the fixation (``scale=1`` -> full
+image, ``<1`` zooms in, ``>1`` zooms out — the periphery then samples outside
+the image, which is intentional). ``scale`` is per-sample (shape ``[B]``).
 
 Per-patch positions in the visual-field frame are exposed by fovi at
 ``KNNPartitioningPatchEmbedding.out_coords.cartesian_rowcol`` in ``[-1, 1]^2``
 (row, col); they map to image-frame scene positions as
 
     scene_pos = viewpoint.centers + (fix_size / image_size) * vf_rowcol
+              = viewpoint.centers + scale * vf_rowcol
 
-With ``fix_size == image_size`` (full-image foveation) this reduces to
-``scene_pos = viewpoint.centers + vf_rowcol``. Fixations near the edge produce
-patches with ``|scene_pos| > 1`` — these encode out-of-image patches, which
-RoPE handles gracefully (the model learns to ignore them implicitly).
+With ``scale == 1`` (full-image foveation) this reduces to
+``scene_pos = viewpoint.centers + vf_rowcol``. Fixations near the edge (or
+``scale > 1``) produce patches with ``|scene_pos| > 1`` — these encode
+out-of-image patches, which RoPE handles gracefully (the model learns to ignore
+them implicitly).
 
 fovi's modules keep their sampling state as plain attributes rather than
 ``nn.Module`` buffers. We override ``_apply`` so that the usual
@@ -50,20 +53,16 @@ class FoveatedPatcherConfig:
 
     Defaults track ``fovi/notebooks/explore_foveated_config.ipynb`` (the
     "real peripheral retina" regime: wide fov, mild cmf, ``pooling`` sampler).
-    ``fixation_size`` is the foveation window in pixels (see the field doc);
-    the default 512 matches the default ``scene_resolution`` (full-image
-    foveation).
+    The foveation window is **not** a config field: it is derived per forward
+    from the viewpoint as ``fix_size = viewpoint.scales * H`` (``scale=1`` ->
+    full image, ``<1`` zooms in, ``>1`` zooms out). The retinal geometry is
+    reference-independent, so the only fixed pixel reference left is
+    ``pattern_reference_size`` (used solely for ring pruning).
     """
 
     fov: float = 180.0
     cmf_a: float = 0.5
     resolution: int = 36
-    fixation_size: int = 512
-    """Side length (px) of the foveation window the sensor samples around the
-    fixation point, used at forward time and reflected in ``scene_pos``. Default
-    512 == the default ``scene_resolution`` -> full-image foveation. Larger
-    (e.g. 722) zooms out (periphery falls outside the image); smaller zooms in
-    to a sub-window."""
     style: str = "isotropic"
     sampler: str = "pooling"
     cart_patch_size: int = 6
@@ -101,15 +100,14 @@ class FoveatedPatcherConfig:
     on the fovi config) but no extra FLOPs. Shared-kernel-identical at init, so
     ``False`` (default) and a freshly-toggled ``True`` start from the same point.
     Only meaningful for the foveated (KNNPartitioning) embedding."""
-    pattern_reference_size: int | None = 512
+    pattern_reference_size: int = 512
     """Reference window size (px) at which per-ring pixel coverage is reckoned
-    for ``min_ring_new_pixels`` pruning. Decoupled from the deploy
-    ``fixation_size`` (which may change / be sampled), so the pruned token set is
-    fixed at construction. Default 512; ``None`` falls back to ``fixation_size``.
-    Has **no other effect** on the foveated geometry (which is
-    reference-independent) — it is only consulted when pruning is enabled, at
-    which point it becomes architecturally significant (it determines how many
-    patches survive)."""
+    for ``min_ring_new_pixels`` pruning. Decoupled from the deploy window (which
+    is per-forward ``scale * H`` and may be sampled), so the pruned token set is
+    fixed at construction. Has **no other effect** on the foveated geometry
+    (which is reference-independent) — it is only consulted when pruning is
+    enabled, at which point it becomes architecturally significant (it determines
+    how many patches survive)."""
     min_ring_new_pixels: int = 0
     """Prune every patch whose eccentricity ring contributes fewer than this many
     *new* image pixels (pixels not already covered by an outer ring) at the
@@ -119,6 +117,13 @@ class FoveatedPatcherConfig:
     and add ~0 new pixels, so they can be dropped with no loss of pixel coverage.
     ``0`` (default) disables pruning and is bit-identical to the unpruned
     embedding. Drops whole rings (the decision is per-ring)."""
+
+
+# Placeholder window (px) passed to ``RetinalTransform`` at construction. It
+# only sets fovi's forward *default*, which we always override per-forward with
+# ``fixation_size = scale * H``; it does not size the sampling grid (that is
+# ``res_mult * resolution``). So the exact value is inert.
+_RETINA_REF_PX = 512
 
 
 def _require_fovi() -> None:
@@ -172,17 +177,19 @@ class FoveatedPatcher(Patcher):
         # from config alone so kpe's in_channels can be set before kpe is built.
         extra_in_channels = conditioner_extra_in_channels(cfg.conditioning)
 
-        # Retinal sampling: ``start_res`` / ``fixation_size`` set fovi's
-        # reference at construction time; at forward time we pass
-        # ``fixation_size=cfg.fixation_size`` (a fixed config value, not image_H).
+        # Retinal sampling. fovi's ``start_res`` / ``fixation_size`` only set the
+        # forward *default* window; they do NOT size the sampling grid (that is
+        # ``res_mult * resolution``). Since we always pass an explicit per-forward
+        # ``fixation_size = scale * H``, the construction value is inert — we pass
+        # a fixed placeholder (``_RETINA_REF_PX``).
         self.retina = RetinalTransform(
             resolution=cfg.resolution,
-            start_res=cfg.fixation_size,
+            start_res=_RETINA_REF_PX,
             fov=cfg.fov,
             cmf_a=cfg.cmf_a,
             style=cfg.style,
             sampler=cfg.sampler,
-            fixation_size=cfg.fixation_size,
+            fixation_size=_RETINA_REF_PX,
             auto_match_cart_resources=cfg.auto_match_cart_resources,
             device=str(dev),
         )
@@ -223,13 +230,10 @@ class FoveatedPatcher(Patcher):
         if cfg.min_ring_new_pixels > 0:
             from fovi.sensing.square import fovi_ring_keep_mask
 
-            ref_size = (
-                cfg.pattern_reference_size
-                if cfg.pattern_reference_size is not None
-                else cfg.fixation_size
-            )
             keep = fovi_ring_keep_mask(
-                self.kpe, reference_size=ref_size, min_new_pixels=cfg.min_ring_new_pixels
+                self.kpe,
+                reference_size=cfg.pattern_reference_size,
+                min_new_pixels=cfg.min_ring_new_pixels,
             )
             self.kpe.prune_output_coords(keep)
 
@@ -342,10 +346,6 @@ class FoveatedPatcher(Patcher):
                 except Exception:
                     pass
 
-    @property
-    def fixation_size(self) -> int:
-        return self.cfg.fixation_size
-
     def pattern_stats(self) -> dict[str, int]:
         """High-level characterization of the foveated sampling pattern, for logging.
 
@@ -353,7 +353,8 @@ class FoveatedPatcher(Patcher):
         ``kpe._k``, with outer rings padded; patches overlap, so this is not
         multiplicative with ``n_patches``); ``n_padded`` = the out-of-FOV KNN
         neighbor slots (fixation-invariant); ``unique_pixels`` = distinct pixel
-        cells the retinal samples resolve at ``fixation_size``, centered. See
+        cells the retinal samples resolve at the fixed ``pattern_reference_size``
+        scale, centered (the deploy window is per-forward ``scale * H``). See
         :func:`canvit_pytorch.patcher.embed.count_unique_pixels`.
         """
         return {
@@ -361,7 +362,7 @@ class FoveatedPatcher(Patcher):
             "samples_per_patch": int(self.kpe._k),
             "n_padded": int(self.kpe.knn_indices_pad_mask.sum()),
             "unique_pixels": count_unique_pixels(
-                self.kpe.in_coords.cartesian, self.cfg.fixation_size
+                self.kpe.in_coords.cartesian, self.cfg.pattern_reference_size
             ),
         }
 
@@ -372,10 +373,15 @@ class FoveatedPatcher(Patcher):
         # fovi's ``fix_loc`` is (row, col) in [0, 1] normalized image coords.
         # ``viewpoint.centers`` is (row, col) in [-1, 1]; rescale.
         fix_loc = (viewpoint.centers.to(torch.float32) + 1.0) * 0.5  # [B, 2]
-        # Foveation window in pixels = cfg.fixation_size. Default (== image side
-        # length) is full-image foveation; larger zooms out (periphery samples
-        # outside the image), smaller zooms in to a sub-window.
-        fix_size = self.cfg.fixation_size
+        # Per-sample foveation window: fix_size = scale * H (scale=1 -> full
+        # image, <1 zooms in, >1 zooms out). fovi's retina accepts a per-sample
+        # [B] fixation_size; we pass scale * H.
+        scales = viewpoint.scales.to(torch.float32)  # [B]
+        fix_px = scales * float(H)  # [B], px (may be non-integer; continuous)
+        # Pass [B, 2] (h == w): fovi's `_check_fixation_size` mishandles a 1-D
+        # [B] (squeeze collapses B=1 to 0-d / collides with the [h,w] case at
+        # B=2); the [B, 2] form is unambiguous for every batch size.
+        fix_size = torch.stack([fix_px, fix_px], dim=-1)  # [B, 2]
         sensor = self.retina(image, fix_loc=fix_loc, fixation_size=fix_size)  # [B, 3, N_samples]
         sensor = self.conditioner.transform_sensor(sensor)  # +coord channels (CoordConv)
         patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
@@ -383,15 +389,13 @@ class FoveatedPatcher(Patcher):
         patches = self.embed_head(patches)  # [B, N_patches, embed_dim] (identity if no MLP)
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.
-        # Convert visual-field rowcol (normalized to the fixation window) to
-        # image-frame coords via the window-to-image pixel ratio. Equals 1.0 for
-        # full-image foveation (fix_size == image side length); >1 when zoomed
-        # out, so edge patches land at |scene_pos| > 1 (out-of-image), which is
-        # intentional — RoPE handles it and the model learns to ignore them.
+        # Visual-field rowcol (normalized to the fixation window) maps to the
+        # image frame via the window-to-image ratio ``fix_size / H == scale``.
+        # ``scale == 1`` -> full image; ``> 1`` (or edge fixations) lands patches
+        # at ``|scene_pos| > 1`` (out-of-image), intentional — RoPE handles it.
         rowcol = self._patch_rowcol.to(torch.float32)  # [N, 2]
-        fix_size_norm = float(fix_size) / float(H)
         scene_pos = (
             viewpoint.centers.view(B, 1, 2).to(torch.float32)
-            + fix_size_norm * rowcol.view(1, -1, 2)
+            + scales.view(B, 1, 1) * rowcol.view(1, -1, 2)
         )  # [B, N, 2]
         return patches, scene_pos

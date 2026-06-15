@@ -57,9 +57,9 @@ def create_patcher(
         st = patcher.pattern_stats()
         log.info(
             "Created foveated patcher: fov=%.1f cmf_a=%.4f resolution=%d "
-            "fixation_size=%d cart_patch_size=%d sampler=%s n_patches=%d "
+            "pattern_reference_size=%d cart_patch_size=%d sampler=%s n_patches=%d "
             "samples_per_patch=%d n_padded=%d unique_pixels=%d",
-            cfg.fov, cfg.cmf_a, cfg.resolution, cfg.fixation_size,
+            cfg.fov, cfg.cmf_a, cfg.resolution, cfg.pattern_reference_size,
             cfg.cart_patch_size, cfg.sampler, st["n_patches"],
             st["samples_per_patch"], st["n_padded"], st["unique_pixels"],
         )
@@ -72,9 +72,9 @@ def create_patcher(
         patcher = SquarePatcher(cfg, embed_dim=backbone.embed_dim, device=device)
         st = patcher.pattern_stats()
         log.info(
-            "Created square patcher: method=%s fixation_size=%d side=%d "
+            "Created square patcher: method=%s pattern_reference_size=%d side=%d "
             "n_patches=%d padding=%s samples_per_patch=%d n_padded=%d unique_pixels=%d",
-            cfg.method, cfg.fixation_size, patcher._side,
+            cfg.method, cfg.pattern_reference_size, patcher._side,
             patcher.n_patches, cfg.padding,
             st["samples_per_patch"], st["n_padded"], st["unique_pixels"],
         )

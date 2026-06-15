@@ -30,14 +30,18 @@ pytestmark = pytest.mark.skipif(
     reason="fovi optional dependency not installed",
 )
 
-# Compact foveated config that produces ~13 patches quickly. Keeps cmf_a /
-# fixation_size / fov in a regime where the patch nearest the foveal center
-# is genuinely near (0, 0) — the sign-convention test depends on this.
+# Image side length (px) fed to the foveated patcher in these tests. The
+# foveation window is no longer a config field — it is `scale * H` per forward,
+# so with a full-scene viewpoint (scale=1) the sensor covers the whole image.
+IMAGE_PX = 128
+
+# Compact foveated config that produces ~13 patches quickly. Keeps cmf_a / fov
+# in a regime where the patch nearest the foveal center is genuinely near
+# (0, 0) — the sign-convention test depends on this.
 SMALL_FOVEATED_CFG = FoveatedPatcherConfig(
     fov=16.0,
     cmf_a=2.785765,
     resolution=32,
-    fixation_size=128,
     style="isotropic",
     sampler="grid_nn",
     cart_patch_size=8,
@@ -65,7 +69,7 @@ def test_n_patches_and_buffer_shape(foveated_patcher):
 
 def test_forward_shapes(foveated_patcher):
     B = 2
-    gpx = SMALL_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     embed_dim = foveated_patcher.embed_dim
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
@@ -86,10 +90,10 @@ def test_foveal_patch_at_origin(foveated_patcher):
 
 
 def test_scene_positions_full_scene(foveated_patcher):
-    """Full-scene viewpoint (centers=0) -> scene_pos == rowcol (foveation
-    covers full image, viewpoint.scales is ignored)."""
+    """Full-scene viewpoint (centers=0, scale=1) -> scene_pos == rowcol
+    (scale=1 = full-image foveation)."""
     B = 3
-    gpx = SMALL_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
     with torch.inference_mode():
@@ -99,21 +103,32 @@ def test_scene_positions_full_scene(foveated_patcher):
         assert torch.allclose(scene_pos[b], rowcol, atol=1e-6)
 
 
-def test_scene_positions_translated(foveated_patcher):
-    """Off-center viewpoint shifts scene_pos by viewpoint.centers
-    (scale is ignored in the new full-image foveation contract).
-    Edge fixations may produce |scene_pos| > 1 — out-of-image patches."""
+def test_scene_positions_scaled_and_translated(foveated_patcher):
+    """scene_pos = centers + scale * rowcol (scale is now honored).
+    Edge fixations / scale>1 may produce |scene_pos| > 1 — out-of-image patches."""
     B = 1
-    gpx = SMALL_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     image = torch.randn(B, 3, gpx, gpx)
-    centers = torch.tensor([[0.3, -0.2]], dtype=torch.float32)
-    scales = torch.tensor([0.4], dtype=torch.float32)  # ignored
-    vp = Viewpoint(centers=centers, scales=scales)
-    with torch.inference_mode():
-        _, scene_pos = foveated_patcher(image, vp)
     rowcol = foveated_patcher._patch_rowcol
-    expected = centers.view(1, 1, 2) + rowcol.view(1, -1, 2)
-    assert torch.allclose(scene_pos, expected, atol=1e-6)
+    for s in (0.4, 1.0, 1.5):
+        centers = torch.tensor([[0.3, -0.2]], dtype=torch.float32)
+        scales = torch.tensor([s], dtype=torch.float32)
+        vp = Viewpoint(centers=centers, scales=scales)
+        with torch.inference_mode():
+            _, scene_pos = foveated_patcher(image, vp)
+        expected = centers.view(1, 1, 2) + s * rowcol.view(1, -1, 2)
+        assert torch.allclose(scene_pos, expected, atol=1e-6), f"scale={s}"
+
+
+def test_scale_changes_sampled_content(foveated_patcher):
+    """A smaller scale (zoom-in) samples different image content than scale=1."""
+    gpx = IMAGE_PX
+    image = torch.randn(1, 3, gpx, gpx)
+    c = torch.zeros(1, 2, dtype=torch.float32)
+    with torch.inference_mode():
+        p_full, _ = foveated_patcher(image, Viewpoint(centers=c, scales=torch.ones(1)))
+        p_zoom, _ = foveated_patcher(image, Viewpoint(centers=c, scales=torch.full((1,), 0.5)))
+    assert not torch.allclose(p_full, p_zoom, atol=1e-4)
 
 
 def test_canvit_end_to_end_foveated(backbone):
@@ -124,7 +139,7 @@ def test_canvit_end_to_end_foveated(backbone):
     )
     model = CanViT(backbone=backbone, cfg=cfg).eval()
     B = 2
-    gpx = SMALL_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     canvas_grid = 16
     image = torch.randn(B, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=B, device=image.device)
@@ -157,7 +172,6 @@ PRUNING_FOVEATED_CFG = FoveatedPatcherConfig(
     fov=180.0,
     cmf_a=0.5,
     resolution=36,
-    fixation_size=128,
     style="isotropic",
     sampler="pooling",
     cart_patch_size=6,
@@ -190,7 +204,7 @@ def test_prune_reduces_patches_and_forward_consistent():
     # buffers + forward stay mutually consistent at the pruned count.
     assert pruned._patch_rowcol.shape == (pruned.n_patches, 2)
     assert pruned._patch_xy.shape == (pruned.n_patches, 2)
-    gpx = PRUNING_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     image = torch.randn(2, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=2, device=image.device)
     with torch.inference_mode():
@@ -199,23 +213,25 @@ def test_prune_reduces_patches_and_forward_consistent():
     assert scene_pos.shape == (2, pruned.n_patches, 2)
 
 
-def test_prune_decision_uses_reference_not_fixation_size():
-    """The kept set is fixed by pattern_reference_size, independent of the
-    (possibly changing) deploy fixation_size."""
-    a = create_patcher("foveated", backbone=create_backbone("vits16"),
-                       foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512,
-                                                fixation_size=128))
-    b = create_patcher("foveated", backbone=create_backbone("vits16"),
-                       foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512,
-                                                fixation_size=256))
-    assert a.n_patches == b.n_patches
+def test_prune_decision_uses_reference_not_deploy_scale():
+    """The kept set is fixed by pattern_reference_size (a build-time constant),
+    independent of the per-forward deploy scale."""
+    pruned = create_patcher("foveated", backbone=create_backbone("vits16"),
+                            foveated_config=_fov_cfg(min_ring_new_pixels=40, pattern_reference_size=512))
+    n = pruned.n_patches
+    image = torch.randn(2, 3, IMAGE_PX, IMAGE_PX)
+    for s in (0.5, 1.0, 1.5):
+        vp = Viewpoint(centers=torch.zeros(2, 2), scales=torch.full((2,), s))
+        with torch.inference_mode():
+            patches, _ = pruned(image, vp)
+        assert patches.shape[1] == n  # token count never depends on deploy scale
 
 
 def test_prune_with_per_ring_kernel():
     """Pruning composes with per-ring kernels (rings remap, no crash)."""
     pruned = create_patcher("foveated", backbone=create_backbone("vits16"),
                             foveated_config=_fov_cfg(min_ring_new_pixels=40, per_ring_kernel=True))
-    gpx = PRUNING_FOVEATED_CFG.fixation_size
+    gpx = IMAGE_PX
     image = torch.randn(1, 3, gpx, gpx)
     vp = Viewpoint.full_scene(batch_size=1, device=image.device)
     with torch.inference_mode():
