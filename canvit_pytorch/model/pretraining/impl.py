@@ -12,6 +12,7 @@ from torch import Tensor, nn
 from canvit_pytorch.backbone import ViTBackbone, create_backbone
 from canvit_pytorch.model.base import CanViT, CanViTOutput, RecurrentState
 from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.modulation import Modulation
 from canvit_pytorch.rope import RoPE
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer
 from canvit_pytorch.viewpoint import Viewpoint
@@ -164,6 +165,7 @@ class CanViTForPretraining(CanViT):
         viewpoint: Viewpoint,
         canvas_grid_size: int | None = None,
         canvas_rope: RoPE | None = None,
+        modulation: Modulation | None = None,
     ) -> CanViTForPretrainingOutput:
         """Image forward + prediction heads in one call.
 
@@ -182,6 +184,7 @@ class CanViTForPretraining(CanViT):
             viewpoint=viewpoint,
             canvas_grid_size=canvas_grid_size,
             canvas_rope=canvas_rope,
+            modulation=modulation,
         )
         scene_pred = self.predict_teacher_scene(base.state.canvas)
         cls_pred = self.predict_scene_teacher_cls(base.state.recurrent_cls)
