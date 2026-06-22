@@ -15,7 +15,7 @@ import torch
 from torch import Tensor
 
 from canvit_pytorch.backbone.vit import ViTBackbone
-from canvit_pytorch.coords import canvas_coords_for_glimpse, grid_coords
+from canvit_pytorch.coords import canvas_coords_for_glimpse, grid_coords, uniform_grid_coords
 from canvit_pytorch.patcher.base import Patcher
 from canvit_pytorch.viewpoint import Viewpoint, sample_at_viewpoint
 
@@ -55,11 +55,21 @@ class UniformPatcher(Patcher):
             glimpse = image
         patches, H, W = self.backbone.patch_embed(glimpse)
         assert H == W, f"UniformPatcher expects a square glimpse grid; got H={H}, W={W}"
+        # Overlapping patches (stride < patch): feed the true per-patch centers as
+        # the scene positions so RoPE and the canvas read/write align with where
+        # each patch actually looks. stride == patch -> retinotopic=None routes
+        # through grid_coords for bit-exact reproduction of the original behavior.
+        patch, stride = self.backbone.patch_size_px, self.backbone.patch_stride_px
+        retinotopic = (
+            None if stride == patch
+            else uniform_grid_coords(g=H, patch_size=patch, stride=stride, device=image.device)
+        )
         scene_pos = canvas_coords_for_glimpse(
             center=viewpoint.centers,
             scale=viewpoint.scales,
             H=H,
             W=W,
+            retinotopic=retinotopic,
         ).flatten(1, 2)  # [B, H*W, 2]
         return patches, scene_pos
 
@@ -69,9 +79,16 @@ class UniformPatcher(Patcher):
                 "UniformPatcher with glimpse_size_px=None has a variable glimpse "
                 "grid; trunk modulation needs a fixed per-patch layout."
             )
-        g = self.glimpse_size_px // self.backbone.patch_size_px
-        # grid_coords is (y, x); flip to fovea-centric (x, y) to match the
-        # foveated/square conditioning convention. This is the constant
-        # (center=0, scale=1) canonical grid.
-        rc = grid_coords(H=g, W=g, device=torch.device("cpu"))  # [g, g, 2] (y, x)
+        # rc is (y, x); flip to fovea-centric (x, y) to match the foveated/square
+        # conditioning convention. Constant (center=0, scale=1) canonical grid.
+        # stride == patch -> grid_coords (bit-exact original); else true overlapping centers.
+        patch, stride = self.backbone.patch_size_px, self.backbone.patch_stride_px
+        if stride == patch:
+            g = self.glimpse_size_px // patch
+            rc = grid_coords(H=g, W=g, device=torch.device("cpu"))  # [g, g, 2] (y, x)
+        else:
+            g = (self.glimpse_size_px - patch) // stride + 1
+            rc = uniform_grid_coords(
+                g=g, patch_size=patch, stride=stride, device=torch.device("cpu")
+            )  # [g, g, 2] (y, x)
         return rc.flatten(0, 1)[:, [1, 0]].contiguous()  # [g*g, 2] (x, y)

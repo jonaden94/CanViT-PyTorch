@@ -19,6 +19,6 @@ Usage::
     )  # [B, H, W, 2]
 """
 
-from canvit_pytorch.coords.impl import canvas_coords_for_glimpse, grid_coords
+from canvit_pytorch.coords.impl import canvas_coords_for_glimpse, grid_coords, uniform_grid_coords
 
-__all__ = ["grid_coords", "canvas_coords_for_glimpse"]
+__all__ = ["grid_coords", "canvas_coords_for_glimpse", "uniform_grid_coords"]

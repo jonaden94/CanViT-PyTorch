@@ -59,8 +59,12 @@ REGISTRY: dict[str, BackboneConfig] = {
 }
 
 
-def create_backbone(name: BackboneName) -> ViTBackbone:
-    """Create a ViT backbone by name (random weights)."""
+def create_backbone(name: BackboneName, patch_stride: int | None = None) -> ViTBackbone:
+    """Create a ViT backbone by name (random weights).
+
+    ``patch_stride`` (default = patch_size) sets the patch-embed conv stride;
+    a smaller value makes the uniform patcher's patches overlap.
+    """
     if name not in REGISTRY:
         available = ", ".join(sorted(REGISTRY))
         raise ValueError(f"Unknown backbone: {name!r}. Available: {available}")
@@ -74,6 +78,7 @@ def create_backbone(name: BackboneName) -> ViTBackbone:
         rope_base=cfg.rope_base,
         layerscale_init=cfg.layerscale_init,
         modulated=cfg.modulated,
+        patch_stride=patch_stride,
     )
     log.info(
         "Created %s: %d blocks, embed_dim=%d, modulated=%s",

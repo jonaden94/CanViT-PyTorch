@@ -24,9 +24,14 @@ class NormFeatures(NamedTuple):
 
 
 class PatchEmbed(nn.Module):
-    def __init__(self, patch_size: int, embed_dim: int) -> None:
+    def __init__(self, patch_size: int, embed_dim: int, stride: int | None = None) -> None:
         super().__init__()
-        self.proj = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # stride defaults to patch_size (standard non-overlapping patchify). A
+        # smaller stride yields overlapping patches: a grid of g = (in-patch)/stride+1
+        # patches per side, each still a patch_size x patch_size conv (weights are
+        # kernel-shaped, so they're identical/loadable regardless of stride).
+        self.stride = stride if stride is not None else patch_size
+        self.proj = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=self.stride)
 
     def forward(self, x: Tensor) -> tuple[Tensor, int, int]:
         x = self.proj(x)  # [B, D, H, W]
@@ -157,6 +162,7 @@ class ViTBackbone(nn.Module):
         rope_base: float,
         layerscale_init: float,
         modulated: bool = False,
+        patch_stride: int | None = None,
     ) -> None:
         super().__init__()
         assert embed_dim % num_heads == 0
@@ -164,12 +170,16 @@ class ViTBackbone(nn.Module):
         self.num_heads = num_heads
         self.n_blocks = n_blocks
         self.patch_size_px = patch_size
+        # Patch-embed conv stride; defaults to patch_size (non-overlapping). A
+        # smaller value makes the uniform patcher's patches overlap. Only the
+        # uniform path uses patch_embed, so this is inert for foveated/square.
+        self.patch_stride_px = patch_stride if patch_stride is not None else patch_size
         self.ffn_ratio = ffn_ratio
         self.rope_base = rope_base
         self.layerscale_init = layerscale_init
         self.modulated = modulated
 
-        self.patch_embed = PatchEmbed(patch_size, embed_dim)
+        self.patch_embed = PatchEmbed(patch_size, embed_dim, stride=self.patch_stride_px)
         self.blocks = nn.ModuleList([
             ViTBlock(embed_dim, num_heads, ffn_ratio, layerscale_init, modulated=modulated)
             for _ in range(n_blocks)
