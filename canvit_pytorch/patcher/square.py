@@ -84,6 +84,11 @@ class SquarePatcherConfig:
     grid_size_fovea: int = 2
     patch_size: int = 6
     edge_length_multipliers: list[int] = field(default_factory=lambda: [2, 6])
+    drop_corners: bool = False
+    """Strided-only: drop the 4 corner patches (top-left/right, bottom-left/right)
+    of the outermost ring, leaving the rest of the pattern bit-identical
+    (``n_patches`` decreases by exactly 4). Only valid for ``method="strided"``,
+    where the rings are squares with well-defined corners."""
 
     # --- shared deploy / embed ----------------------------------------------
     pattern_reference_size: int = 512
@@ -246,6 +251,37 @@ class SquarePatcher(Patcher):
             )
             if not bool(keep.all()):
                 pattern = pattern.subset(keep)
+
+        # Optional corner drop (strided only): remove the 4 corner patches of the
+        # outermost ring — top-left/right, bottom-left/right, i.e. the 4 diagonal
+        # extremes (argmax of ±x±y). The rest of the pattern is bit-identical;
+        # n_patches decreases by exactly 4. Done on the frozen pattern before any
+        # buffer is built, so every downstream array is the reduced set.
+        if cfg.drop_corners:
+            if cfg.method != "strided":
+                raise ValueError(
+                    "drop_corners is only supported for method='strided' (its square "
+                    f"rings have well-defined corners); got method={cfg.method!r}."
+                )
+            c = pattern.centers_xy
+            outer = (
+                pattern.ring_idx == pattern.ring_idx.max()
+                if pattern.ring_idx is not None
+                else torch.ones(c.shape[0], dtype=torch.bool)
+            )
+            outer_pos = torch.nonzero(outer, as_tuple=False).flatten()
+            co = c[outer]
+            corners = {
+                int(outer_pos[int((sx * co[:, 0] + sy * co[:, 1]).argmax())])
+                for sx in (1, -1)
+                for sy in (1, -1)
+            }
+            assert len(corners) == 4, (
+                f"drop_corners expected 4 distinct corner patches, found {len(corners)}"
+            )
+            keep = torch.ones(c.shape[0], dtype=torch.bool)
+            keep[list(corners)] = False
+            pattern = pattern.subset(keep)
 
         self._n_patches = pattern.n_patches
         self._k = pattern.k
