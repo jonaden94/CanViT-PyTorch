@@ -186,6 +186,41 @@ uv run --extra demo python demos/basic.py
 
 We aim to maintain compatibility with [`torch.export`](https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/export.html) and [ONNX Runtime](https://onnxruntime.ai/). Please [file an issue](https://github.com/m2b3/CanViT-PyTorch/issues) if you encounter problems.
 
+## Local multi-repo setup
+
+For the foveated active-vision project, this repo is developed together with four
+sibling repos, with `CanViT-PyTorch` depending on `fovi`:
+
+```
+repos/
+├── fovi/               # leaf — no internal deps
+├── CanViT-PyTorch/     # this repo; depends on fovi (via the [fovi] extra)
+├── CanViT-specialize/  # depends on CanViT-PyTorch
+├── CanViT-pretrain/    # depends on CanViT-PyTorch[fovi]
+└── CanViT-eval/        # depends on CanViT-PyTorch[fovi] + CanViT-specialize
+```
+
+Each repo has its **own** uv-managed venv. Clone all five **as siblings in the
+same parent folder**, then in this repo:
+
+```bash
+uv sync               # core package
+uv sync --extra fovi  # also install fovi (foveated patcher: FoveatedPatcher)
+```
+
+The cross-repo link is committed in `pyproject.toml` under `[tool.uv.sources]`
+as a **relative-path editable install** (`fovi = { path = "../fovi", editable =
+true }`). Relative paths resolve on any machine as long as the repos are
+siblings, and the editable install means edits in the local `fovi` clone are
+picked up immediately — no reinstall, no manual `uv pip install -e`. To install
+without the `fovi` clone present, swap that line back to the remote fork
+(`fovi = { git = "https://github.com/jonaden94/fovi.git" }`) and `uv sync`.
+
+> The public install above (`uv add "canvit-pytorch @ git+…"`) is the right
+> choice when you just want to *use* the package; the editable layout here is for
+> developing the repos together. For frozen multi-day runs, see
+> `CanViT-pretrain`'s README ("Pinning code for long runs").
+
 ## See also
 
 - [CanViT-pretrain](https://github.com/m2b3/CanViT-pretrain) — pretraining harness (passive-to-active dense distillation from DINOv3)

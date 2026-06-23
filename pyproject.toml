@@ -53,7 +53,11 @@ dev = [
 
 [tool.uv.sources]
 dinov3-in1k-probes = { git = "https://github.com/m2b3/dinov3-in1k-probes.git" }
-fovi = { git = "https://github.com/jonaden94/fovi.git" }
+# Local editable: picks up live edits in the sibling fovi clone. Assumes the 5
+# project repos are cloned side by side in one parent folder. Swap back to the
+# remote fork — `fovi = { git = "https://github.com/jonaden94/fovi.git" }` — to
+# install without the sibling present. See README "Local multi-repo setup".
+fovi = { path = "../fovi", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["canvit_pytorch", "tests"]
