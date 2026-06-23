@@ -289,3 +289,78 @@ def test_prune_reduces_patches_square():
         patches, scene_pos = pruned(image, vp)
     assert patches.shape == (2, pruned.n_patches, EMBED_DIM)
     assert scene_pos.shape == (2, pruned.n_patches, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Strided add_to_patch_size (decouple sampling density from patch geometry)
+# --------------------------------------------------------------------------- #
+
+def _strided_cfg(add):
+    return SquarePatcherConfig(
+        method="strided", grid_size_fovea=2, patch_size=6,
+        edge_length_multipliers=[2, 6], pattern_reference_size=64,
+        add_to_patch_size=add,
+    )
+
+
+@pytest.mark.parametrize("add", [-2, 0, 4])
+def test_strided_add_to_patch_size_geometry_invariant(add):
+    """add_to_patch_size changes K but NOT patch geometry: same n_patches, same
+    per-patch centers, K = (patch_size + add)**2, side = patch_size + add."""
+    base = _patcher(_strided_cfg(0))
+    p = _patcher(_strided_cfg(add))
+    m = 6 + add
+    assert p.n_patches == base.n_patches
+    assert p._k == m * m
+    assert p._side == m
+    # Patch centers (-> scene_pos / RoPE) are independent of the sample count.
+    assert torch.allclose(p._patch_rowcol, base._patch_rowcol, atol=1e-6)
+    assert torch.allclose(p._patch_xy, base._patch_xy, atol=1e-6)
+
+
+@pytest.mark.parametrize("add", [-2, 0, 4])
+def test_strided_add_scene_pos_invariant_and_shapes(add):
+    """End-to-end: forward shapes track K, and scene_pos is invariant to add
+    (geometry unchanged) for both full-scene and off-center viewpoints."""
+    base = _patcher(_strided_cfg(0))
+    p = _patcher(_strided_cfg(add))
+    gpx = 64
+    image = torch.randn(2, 3, gpx, gpx)
+    for vp in (
+        Viewpoint.full_scene(batch_size=2, device=image.device),
+        Viewpoint(centers=torch.tensor([[0.3, -0.2], [0.0, 0.0]]),
+                  scales=torch.tensor([0.5, 1.0])),
+    ):
+        with torch.inference_mode():
+            patches_b, sp_b = base(image, vp)
+            patches_p, sp_p = p(image, vp)
+        assert patches_p.shape == (2, p.n_patches, EMBED_DIM)
+        assert torch.allclose(sp_p, sp_b, atol=1e-5)
+
+
+def test_strided_samples_centered_in_patch():
+    """Option B: samples are perfectly centered in each patch (the offset multiset
+    is symmetric about the center) — for every ring, incl. even strides whose native
+    integer layout sat half a pixel off-center."""
+    pat = _patcher(_strided_cfg(0))
+    pos = pat.sample_positions_xy()                       # [P, K, 2]
+    off = pos - pat._patch_xy[:, None, :]                 # center-relative offsets
+    for pidx in range(off.shape[0]):
+        o = off[pidx].reshape(-1)
+        a, _ = torch.sort(o)
+        b, _ = torch.sort(-o)
+        assert torch.allclose(a, b, atol=1e-5), f"patch {pidx} not centered"
+
+
+def test_add_to_patch_size_min_two():
+    """patch_size + add_to_patch_size must be >= 2."""
+    with pytest.raises(ValueError, match=">= 2"):
+        _patcher(_strided_cfg(-5))   # 6 + (-5) = 1
+
+
+@pytest.mark.parametrize("method", ["fovi", "fovi_regularized"])
+def test_add_to_patch_size_rejected_non_strided(method):
+    cfg = copy.deepcopy(CFGS[method])
+    cfg.add_to_patch_size = 3
+    with pytest.raises(ValueError, match="only supported for method='strided'"):
+        SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")

@@ -89,6 +89,14 @@ class SquarePatcherConfig:
     of the outermost ring, leaving the rest of the pattern bit-identical
     (``n_patches`` decreases by exactly 4). Only valid for ``method="strided"``,
     where the rings are squares with well-defined corners."""
+    add_to_patch_size: int = 0
+    """Strided-only: change the per-patch sampling density WITHOUT changing patch
+    geometry. Each patch is sampled with ``(patch_size + add_to_patch_size)`` points
+    per axis (``K = (patch_size + add_to_patch_size)**2``), spaced evenly and centered
+    within its (unchanged) cell. Patch centers, extents and ``n_patches`` are invariant
+    to this; only the sample count/spacing changes. ``0`` (default) = native resolution;
+    ``>0`` oversamples (sub-pixel, bilinearly interpolated); ``<0`` undersamples. Must
+    satisfy ``patch_size + add_to_patch_size >= 2``. Only valid for ``method="strided"``."""
 
     # --- shared deploy / embed ----------------------------------------------
     pattern_reference_size: int = 512
@@ -181,6 +189,7 @@ def _build_pattern(cfg: SquarePatcherConfig, device: torch.device | str):
             patch_size=cfg.patch_size,
             edge_length_multipliers=list(cfg.edge_length_multipliers),
             fixation_size=ref_size,
+            add_to_patch_size=cfg.add_to_patch_size,
         )
     pe = _build_fovi_pe(cfg, device)
     if cfg.method == "fovi":
@@ -228,6 +237,12 @@ class SquarePatcher(Patcher):
             f"(got mode={cfg.conditioning.mode!r}); its weight surgery is "
             "specific to the KNN-conv embed."
         )
+        if cfg.add_to_patch_size != 0 and cfg.method != "strided":
+            raise ValueError(
+                "add_to_patch_size is only supported for method='strided' (it "
+                "resamples the strided cell grid); got "
+                f"method={cfg.method!r} with add_to_patch_size={cfg.add_to_patch_size}."
+            )
 
         self.cfg = cfg
         self.embed_dim = embed_dim
