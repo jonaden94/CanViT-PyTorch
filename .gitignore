@@ -24,5 +24,4 @@ bench/results/
 
 # Node.js
 node_modules
-.venv-v100/
 .venv-cu126/

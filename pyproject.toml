@@ -44,6 +44,7 @@ fovi = [
 
 [dependency-groups]
 dev = [
+    "ipykernel",  # Jupyter kernel for notebooks (installed in both .venv and .venv-cu126)
     "basedpyright>=1.36.1",
     "ipython>=9.8.0",
     "pypatree>=0.4.0",
