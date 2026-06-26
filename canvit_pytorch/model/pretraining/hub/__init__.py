@@ -12,6 +12,8 @@ from safetensors.torch import save_file
 
 from canvit_pytorch.backbone import create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
+from canvit_pytorch.encoding import SinusoidalConfig
+from canvit_pytorch.modulation import ViTModulationConfig
 from canvit_pytorch.patcher import FoveatedPatcherConfig, SquarePatcherConfig
 from canvit_pytorch.patcher.conditioning import (
     CoordConvConfig,
@@ -73,6 +75,11 @@ def upload_to_hf(
         "model_config": asdict(cfg),
         "canvas_patch_grid_sizes": model.canvas_patch_grid_sizes,
     }
+    # Persist patch_stride ONLY for overlapping-patch models (stride < patch);
+    # it lives outside model_config. Omitted otherwise so non-overlap configs
+    # stay byte-for-byte identical and load with create_backbone's default.
+    if model.backbone.patch_stride_px != model.backbone.patch_size_px:
+        config["patch_stride"] = model.backbone.patch_stride_px
     if extra_metadata is not None:
         config["metadata"] = extra_metadata
 
@@ -137,6 +144,7 @@ class CanViTForPretrainingHFHub(
         model_config: dict[str, Any],
         canvas_patch_grid_sizes: list[int],
         glimpse_grid_size: int | None = None,
+        patch_stride: int | None = None,
     ):
         # Coerce nested patcher dict → dataclass for foveated / square
         # checkpoints. upload_to_hf serializes the config via asdict (flattens
@@ -177,8 +185,24 @@ class CanViTForPretrainingHFHub(
                     **_coerce_conditioning(model_config["square_patcher"])
                 ),
             }
+        # vit_modulation is the third nested-dataclass field of the config (its
+        # own subtree: fourier / sinusoidal, both flat). asdict flattened it to a
+        # dict on save; coerce it back so cfg.vit_modulation is a dataclass. Gated
+        # on the dict being present, so checkpoints predating the field (which
+        # omit it and fall back to the default dataclass) are unaffected.
+        if isinstance(model_config.get("vit_modulation"), dict):
+            vm = dict(model_config["vit_modulation"])
+            if isinstance(vm.get("fourier"), dict):
+                vm["fourier"] = FourierConfig(**vm["fourier"])
+            if isinstance(vm.get("sinusoidal"), dict):
+                vm["sinusoidal"] = SinusoidalConfig(**vm["sinusoidal"])
+            model_config = {**model_config, "vit_modulation": ViTModulationConfig(**vm)}
+        # ``patch_stride`` (overlapping patches: stride < patch_size) must be
+        # rebuilt here — it is NOT in model_config (it's a top-level training
+        # field). ``None`` -> create_backbone defaults to patch_size, so every
+        # non-overlapping checkpoint is byte-for-byte unaffected.
         super().__init__(
-            backbone=create_backbone(backbone_name),
+            backbone=create_backbone(backbone_name, patch_stride=patch_stride),
             cfg=CanViTForPretrainingConfig(**model_config),
             backbone_name=backbone_name,
             canvas_patch_grid_sizes=canvas_patch_grid_sizes,
