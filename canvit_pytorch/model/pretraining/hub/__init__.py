@@ -1,8 +1,10 @@
 """HuggingFace Hub integration for CanViTForPretraining."""
 
+import dataclasses
 import json
 import logging
 import tempfile
+import typing
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,17 +14,43 @@ from safetensors.torch import save_file
 
 from canvit_pytorch.backbone import create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
-from canvit_pytorch.encoding import SinusoidalConfig
 from canvit_pytorch.modulation import ViTModulationConfig
 from canvit_pytorch.patcher import FoveatedPatcherConfig, SquarePatcherConfig
-from canvit_pytorch.patcher.conditioning import (
-    CoordConvConfig,
-    FiLMConfig,
-    FourierConfig,
-    PatchConditioningConfig,
-)
 
 from ..impl import CanViTForPretraining, CanViTForPretrainingConfig
+
+
+def _coerce(tp, value):
+    """Recursively rebuild a dataclass of type ``tp`` from ``value`` when
+    ``value`` is a dict (as produced by ``asdict`` at save time), coercing any
+    nested dataclass-typed fields at any depth. Non-dict values and
+    non-dataclass targets pass through unchanged.
+
+    Faithful-or-loud-fail by design — it never fabricates values:
+      * EVERY key in ``value`` is passed to the dataclass constructor, so a key
+        this code does not know (e.g. a config field added to the model *after*
+        this loader was written, loaded without updating the loader) raises a
+        loud ``TypeError`` rather than being silently dropped. This is what
+        prevents a future, un-updated eval from silently evaluating a model that
+        diverges from pretraining.
+      * A field present in the dataclass but ABSENT from ``value`` takes the
+        dataclass default (a checkpoint predating that field). This is the only
+        place defaults enter, so new fields MUST default to backward-compatible
+        behavior — the one invariant no loader can enforce for you (the
+        strict state_dict load is the backstop for anything affecting weights)."""
+    if not isinstance(value, dict):
+        return value
+    if typing.get_origin(tp) is not None:  # Optional[X] / Union[...] -> the dataclass member
+        tp = next((a for a in typing.get_args(tp) if dataclasses.is_dataclass(a)), None)
+    if tp is None or not dataclasses.is_dataclass(tp):
+        return value
+    try:
+        hints = typing.get_type_hints(tp)
+    except Exception:  # noqa: BLE001 — unresolved annotations: fall back to raw field types
+        hints = {f.name: f.type for f in dataclasses.fields(tp)}
+    # Pass ALL keys (recursing into known dataclass-typed fields); an unknown key
+    # reaches tp(**...) and raises TypeError — never silently dropped.
+    return tp(**{k: (_coerce(hints[k], v) if k in hints else v) for k, v in value.items()})
 
 log = logging.getLogger(__name__)
 
@@ -146,59 +174,26 @@ class CanViTForPretrainingHFHub(
         glimpse_grid_size: int | None = None,
         patch_stride: int | None = None,
     ):
-        # Coerce nested patcher dict → dataclass for foveated / square
-        # checkpoints. upload_to_hf serializes the config via asdict (flattens
-        # nested dataclasses to dicts), but CanViTForPretrainingConfig(
-        # **model_config) does no recursive coercion, so the patcher would
-        # receive a dict. Strictly gated on patcher_name so the uniform path is
-        # byte-for-byte unaffected. The conditioning subtree has its own nested
-        # dataclasses (FiLMConfig / FourierConfig / CoordConvConfig) that must
-        # also be coerced recursively.
-        def _coerce_conditioning(fp: dict) -> dict:
-            fp = dict(fp)
-            cond = fp.get("conditioning")
-            if isinstance(cond, dict):
-                cond = dict(cond)
-                if isinstance(cond.get("film"), dict):
-                    film = dict(cond["film"])
-                    if isinstance(film.get("fourier"), dict):
-                        film["fourier"] = FourierConfig(**film["fourier"])
-                    if isinstance(film.get("sinusoidal"), dict):
-                        film["sinusoidal"] = SinusoidalConfig(**film["sinusoidal"])
-                    cond["film"] = FiLMConfig(**film)
-                if isinstance(cond.get("coordconv"), dict):
-                    cond["coordconv"] = CoordConvConfig(**cond["coordconv"])
-                fp["conditioning"] = PatchConditioningConfig(**cond)
-            return fp
-
+        # asdict() flattens nested dataclasses to dicts on save, but
+        # CanViTForPretrainingConfig(**model_config) only builds shallowly — so
+        # nested dataclass fields (patcher.conditioning.{film.{fourier,
+        # sinusoidal},coordconv}, vit_modulation.{fourier,sinusoidal}, …) arrive
+        # as dicts and break on first attribute access. Rebuild them with the
+        # generic recursive _coerce, which handles ANY depth (no per-field
+        # special-casing — that approach repeatedly missed fields). Gated exactly
+        # as before — only the ACTIVE patcher + vit_modulation — so every
+        # existing checkpoint instantiates a byte-for-byte identical config.
         if (model_config.get("patcher_name") == "foveated"
                 and isinstance(model_config.get("foveated_patcher"), dict)):
-            model_config = {
-                **model_config,
-                "foveated_patcher": FoveatedPatcherConfig(
-                    **_coerce_conditioning(model_config["foveated_patcher"])
-                ),
-            }
+            model_config = {**model_config,
+                            "foveated_patcher": _coerce(FoveatedPatcherConfig, model_config["foveated_patcher"])}
         if (model_config.get("patcher_name") == "square"
                 and isinstance(model_config.get("square_patcher"), dict)):
-            model_config = {
-                **model_config,
-                "square_patcher": SquarePatcherConfig(
-                    **_coerce_conditioning(model_config["square_patcher"])
-                ),
-            }
-        # vit_modulation is the third nested-dataclass field of the config (its
-        # own subtree: fourier / sinusoidal, both flat). asdict flattened it to a
-        # dict on save; coerce it back so cfg.vit_modulation is a dataclass. Gated
-        # on the dict being present, so checkpoints predating the field (which
-        # omit it and fall back to the default dataclass) are unaffected.
+            model_config = {**model_config,
+                            "square_patcher": _coerce(SquarePatcherConfig, model_config["square_patcher"])}
         if isinstance(model_config.get("vit_modulation"), dict):
-            vm = dict(model_config["vit_modulation"])
-            if isinstance(vm.get("fourier"), dict):
-                vm["fourier"] = FourierConfig(**vm["fourier"])
-            if isinstance(vm.get("sinusoidal"), dict):
-                vm["sinusoidal"] = SinusoidalConfig(**vm["sinusoidal"])
-            model_config = {**model_config, "vit_modulation": ViTModulationConfig(**vm)}
+            model_config = {**model_config,
+                            "vit_modulation": _coerce(ViTModulationConfig, model_config["vit_modulation"])}
         # ``patch_stride`` (overlapping patches: stride < patch_size) must be
         # rebuilt here — it is NOT in model_config (it's a top-level training
         # field). ``None`` -> create_backbone defaults to patch_size, so every
