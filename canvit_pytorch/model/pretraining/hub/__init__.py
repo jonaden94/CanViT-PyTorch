@@ -163,6 +163,8 @@ class CanViTForPretrainingHFHub(
                     film = dict(cond["film"])
                     if isinstance(film.get("fourier"), dict):
                         film["fourier"] = FourierConfig(**film["fourier"])
+                    if isinstance(film.get("sinusoidal"), dict):
+                        film["sinusoidal"] = SinusoidalConfig(**film["sinusoidal"])
                     cond["film"] = FiLMConfig(**film)
                 if isinstance(cond.get("coordconv"), dict):
                     cond["coordconv"] = CoordConvConfig(**cond["coordconv"])
