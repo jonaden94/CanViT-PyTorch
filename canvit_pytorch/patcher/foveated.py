@@ -385,7 +385,9 @@ class FoveatedPatcher(Patcher):
         sensor = self.retina(image, fix_loc=fix_loc, fixation_size=fix_size)  # [B, 3, N_samples]
         sensor = self.conditioner.transform_sensor(sensor)  # +coord channels (CoordConv)
         patches = self.kpe(sensor)  # [B, N_patches, kpe_embed_dim]
-        patches = self.conditioner.modulate_kpe_output(patches)  # FiLM
+        # `scale` ([B]) is consumed only by scale-aware FiLM (encode_scale=True);
+        # every other conditioner ignores it, so this is a no-op otherwise.
+        patches = self.conditioner.modulate_kpe_output(patches, scale=scales)  # FiLM
         patches = self.embed_head(patches)  # [B, N_patches, embed_dim] (identity if no MLP)
 
         # Scene positions for each patch, image-coord frame [-1, 1]^2.

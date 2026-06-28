@@ -445,7 +445,9 @@ class SquarePatcher(Patcher):
         # Flatten each patch's samples (channel-major, then sample) and embed.
         x = samp.permute(0, 2, 1, 3).reshape(B, P, C * K)  # [B, P, C*K]
         x = self.embed(x)                                   # [B, P, kpe_embed_dim]
-        x = self.conditioner.modulate_kpe_output(x)         # FiLM (identity if unused)
+        # `scale` ([B]) is used only by scale-aware FiLM (encode_scale=True);
+        # other conditioners ignore it, so this stays identity when unused.
+        x = self.conditioner.modulate_kpe_output(x, scale=scales)  # FiLM (identity if unused)
         x = self.embed_head(x)                              # [B, P, embed_dim]
 
         # Scene positions: same window-to-image mapping as FoveatedPatcher

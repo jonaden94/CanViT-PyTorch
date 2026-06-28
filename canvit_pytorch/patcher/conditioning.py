@@ -11,6 +11,9 @@ All positions are fovea-centric ``cartesian`` ``(x, y)`` in ``[-1, 1]^2`` (the
 ``(0, 0)`` origin is the fovea), constant across batch/fixation:
     - per-sample positions  -> ``kpe.in_coords.cartesian``  ([N_samples, 2])
     - per-patch  positions  -> ``kpe.out_coords.cartesian`` ([N_patches, 2])
+(The one exception is FiLM with ``encode_scale=True``, which additionally feeds
+the per-forward, per-sample view ``scale`` into its encoder — so that conditioner
+alone is batch/glimpse-dependent; the patch geometry above stays constant.)
 
 Conditioning hooks (each identity by default; a mode overrides only the ones it
 needs), called by ``FoveatedPatcher.forward`` at two points of the pipeline
@@ -67,6 +70,17 @@ class FiLMConfig:
     """Encoder settings used when ``encoding='fourier'``."""
     sinusoidal: SinusoidalConfig = field(default_factory=SinusoidalConfig)
     """Encoder settings used when ``encoding='sinusoidal'``."""
+    encode_scale: bool = False
+    """If True, append the per-forward view ``scale`` (= ``fix_size / H``; ``1`` =
+    full image, ``<1`` zooms in) to the encoder input, so the conditioning becomes
+    ``(x, y, r, scale)`` instead of ``(x, y, r)``. The patch geometry ``(x, y, r)``
+    is constant, but ``scale`` is per-sample (``[B]``) and may vary per glimpse, so
+    with this on the FiLM ``(gamma, beta)`` are recomputed per forward and are
+    batch-dependent (``[B, N, kpe_out]`` instead of ``[N, kpe_out]``). Lets the
+    patch embedding adapt to the current zoom (e.g. for ``per_glimpse`` /
+    ``per_rollout`` scale sampling); for a single fixed training scale it carries
+    no information. ``False`` (default) is bit-identical to the original
+    scale-blind FiLM (encoder input stays 3-dim; ``gamma/beta`` stay ``[N, kpe_out]``)."""
 
 
 @dataclass
@@ -104,7 +118,9 @@ class PatchConditioner(nn.Module):
     def transform_sensor(self, sensor: Tensor) -> Tensor:
         return sensor
 
-    def modulate_kpe_output(self, h: Tensor) -> Tensor:
+    def modulate_kpe_output(self, h: Tensor, scale: Tensor | None = None) -> Tensor:
+        # ``scale`` ([B] per-sample view scale) is consumed only by scale-aware
+        # FiLM; every other conditioner ignores it (identity hook here).
         return h
 
     def after_kpe_built(self, kpe: nn.Module) -> None:
@@ -126,13 +142,21 @@ class FiLMConditioner(PatchConditioner):
     def __init__(self, cfg: FiLMConfig, *, kpe_out: int, patch_xyr: Tensor) -> None:
         super().__init__()
         self.kpe_out = kpe_out
+        self.encode_scale = cfg.encode_scale
         # Constant per-patch (x, y, r); not trained, not saved (regenerated).
         self.register_buffer("cond_input", patch_xyr.detach().clone().float(), persistent=False)
+        # +1 input dim for the appended per-forward scale when encode_scale is on.
+        # NB: for the Fourier encoder the output width is 2*num_features regardless
+        # of in_dim (only its fixed projection buffer B gains a row), so the MLP is
+        # shape-identical with/without scale; for sinusoidal the encoder output
+        # (hence the MLP's first Linear) grows by 2*num_freqs. Either way no FiLM
+        # hyperparameter changes between scale-on and scale-off runs.
+        in_dim = patch_xyr.shape[1] + (1 if cfg.encode_scale else 0)
         if cfg.encoding == "sinusoidal":
-            self.encoder = SinusoidalEncoder(patch_xyr.shape[1], cfg.sinusoidal.num_freqs)
+            self.encoder = SinusoidalEncoder(in_dim, cfg.sinusoidal.num_freqs)
         else:
             self.encoder = FourierEncoder(
-                patch_xyr.shape[1], cfg.fourier.num_features, cfg.fourier.sigma, cfg.fourier.seed
+                in_dim, cfg.fourier.num_features, cfg.fourier.sigma, cfg.fourier.seed
             )
 
         out_dim = 2 * kpe_out  # gamma and beta
@@ -143,20 +167,31 @@ class FiLMConditioner(PatchConditioner):
             if i < len(dims) - 2:
                 layers.append(nn.ReLU())
         self.mlp = nn.Sequential(*layers)
-        # Zero the final layer -> MLP outputs 0 -> gamma=1, beta=0 -> no-op at init.
+        # Zero the final layer -> MLP outputs 0 -> gamma=1, beta=0 -> no-op at init
+        # (holds with or without scale, so a scale-aware FiLM still starts
+        # bit-identical to the unconditioned model).
         out_layer = layers[-1]
         assert isinstance(out_layer, nn.Linear)
         nn.init.zeros_(out_layer.weight)
         nn.init.zeros_(out_layer.bias)
 
-    def _gamma_beta(self) -> tuple[Tensor, Tensor]:
-        out = self.mlp(self.encoder(self.cond_input))  # [N, 2*kpe_out]
-        d_gamma, beta = out[:, : self.kpe_out], out[:, self.kpe_out :]
+    def _gamma_beta(self, scale: Tensor | None) -> tuple[Tensor, Tensor]:
+        if self.encode_scale:
+            assert scale is not None, "encode_scale=True FiLM requires a per-sample view scale"
+            b = scale.shape[0]
+            n = self.cond_input.shape[0]
+            xyr = self.cond_input.unsqueeze(0).expand(b, -1, -1)               # [B, N, 3]
+            s = scale.to(self.cond_input.dtype).view(b, 1, 1).expand(b, n, 1)  # [B, N, 1]
+            feats = torch.cat([xyr, s], dim=-1)                               # [B, N, 4]
+        else:
+            feats = self.cond_input  # [N, 3]
+        out = self.mlp(self.encoder(feats))  # [N, 2*kpe_out] or [B, N, 2*kpe_out]
+        d_gamma, beta = out[..., : self.kpe_out], out[..., self.kpe_out :]
         gamma = 1.0 + d_gamma
         return gamma, beta
 
-    def modulate_kpe_output(self, h: Tensor) -> Tensor:
-        gamma, beta = self._gamma_beta()  # [N, kpe_out]
+    def modulate_kpe_output(self, h: Tensor, scale: Tensor | None = None) -> Tensor:
+        gamma, beta = self._gamma_beta(scale)  # [N, kpe_out] or [B, N, kpe_out]
         return h * gamma + beta  # broadcast over [B, N, kpe_out]
 
 
@@ -211,9 +246,9 @@ class CompositeConditioner(PatchConditioner):
             sensor = c.transform_sensor(sensor)
         return sensor
 
-    def modulate_kpe_output(self, h: Tensor) -> Tensor:
+    def modulate_kpe_output(self, h: Tensor, scale: Tensor | None = None) -> Tensor:
         for c in self.conditioners:
-            h = c.modulate_kpe_output(h)
+            h = c.modulate_kpe_output(h, scale=scale)
         return h
 
     def after_kpe_built(self, kpe: nn.Module) -> None:

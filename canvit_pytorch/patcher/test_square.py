@@ -152,6 +152,43 @@ def test_conditioning_film_noop_at_init(encoding):
     assert torch.allclose(a, b, atol=1e-5)
 
 
+@pytest.mark.parametrize("encoding", ["fourier", "sinusoidal"])
+def test_conditioning_film_encode_scale(encoding):
+    """Scale-aware FiLM (``encode_scale=True``): still a no-op at init, but once
+    trained the per-forward view ``scale`` genuinely modulates the patches
+    (per-sample), unlike scale-blind FiLM which ignores it."""
+    cfg = copy.deepcopy(CFGS["fovi"])
+    cfg.conditioning = PatchConditioningConfig(
+        mode="film", film=FiLMConfig(encoding=encoding, encode_scale=True)
+    )
+    p = SquarePatcher(cfg, embed_dim=EMBED_DIM, device="cpu")
+    gpx = cfg.pattern_reference_size
+    image = torch.randn(2, 3, gpx, gpx)
+    centers = torch.zeros(2, 2)
+    vp_a = Viewpoint(centers=centers, scales=torch.full((2,), 0.3))
+    vp_b = Viewpoint(centers=centers, scales=torch.full((2,), 1.2))
+
+    # No-op at init: zero-init final layer -> gamma=1, beta=0 regardless of scale,
+    # so the two scales would differ ONLY through sampling, not FiLM. Verify FiLM
+    # itself is identity by checking gamma/beta directly.
+    g, b = p.conditioner._gamma_beta(vp_a.scales)
+    assert g.shape == (2, p.n_patches, EMBED_DIM)  # batch-dependent now
+    assert torch.allclose(g, torch.ones_like(g)) and torch.allclose(b, torch.zeros_like(b))
+
+    # After perturbing the final layer, the SAME kpe output modulates differently
+    # under different scales (isolates the scale pathway from sampling).
+    with torch.no_grad():
+        p.conditioner.mlp[-1].weight.normal_(0, 0.1)
+        p.conditioner.mlp[-1].bias.normal_(0, 0.1)
+    h = torch.randn(2, p.n_patches, EMBED_DIM)
+    out_a = p.conditioner.modulate_kpe_output(h, scale=vp_a.scales)
+    out_b = p.conditioner.modulate_kpe_output(h, scale=vp_b.scales)
+    assert not torch.allclose(out_a, out_b)
+    # Per-sample routing: a mixed-scale batch picks each row's own scale result.
+    mixed = p.conditioner.modulate_kpe_output(h, scale=torch.tensor([0.3, 1.2]))
+    assert torch.allclose(mixed[0], out_a[0]) and torch.allclose(mixed[1], out_b[1])
+
+
 def test_learned_padding_noop_at_init():
     """Learned padding (zero-init) == zero padding at init."""
     base = _patcher(CFGS["strided"])
