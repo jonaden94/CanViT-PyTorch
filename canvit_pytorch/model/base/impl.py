@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from canvit_pytorch.attention import (
@@ -14,12 +15,13 @@ from canvit_pytorch.attention import (
     CanvasWriteAttention,
     CanvasWriteAttentionFull,
 )
+from canvit_pytorch.attention.base import from_multihead, to_multihead
 from canvit_pytorch.backbone.vit import ViTBackbone
 from canvit_pytorch.coords import grid_coords
 from canvit_pytorch.model.base.config import CanViTConfig
 from canvit_pytorch.modulation import Modulation, TokenModulation
 from canvit_pytorch.patcher import Patcher, create_patcher
-from canvit_pytorch.rope import RoPE, compute_rope, make_rope_periods
+from canvit_pytorch.rope import RoPE, compute_rope, make_rope_periods, rope_apply_with_prefix
 from canvit_pytorch.viewpoint import Viewpoint
 from canvit_pytorch.vpe import VPEEncoder
 
@@ -107,6 +109,50 @@ def compute_rw_positions(
     return tuple(read_after), tuple(write_after)
 
 
+class CanvasSelfAttnBlock(nn.Module):
+    """Self-attention over the canvas (memory) tokens, run once per glimpse.
+
+    Pre-norm MHSA over the full canvas [registers | spatial]; RoPE rotates only
+    the spatial tail (registers left unrotated, via ``rope_apply_with_prefix`` —
+    same prefix convention as the read/write cross-attn). An optional pre-norm
+    MLP follows (``mlp_ratio == 0`` -> attention-only). The output projection
+    (and MLP out) are zero-initialised, so at init the block is exactly identity
+    and the model reproduces its no-self-attn behaviour.
+    """
+
+    def __init__(self, *, dim: int, num_heads: int, mlp_ratio: float) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.norm1 = nn.LayerNorm(dim)
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+        self.norm2: nn.LayerNorm | None = None
+        self.mlp: nn.Sequential | None = None
+        if mlp_ratio > 0:
+            hidden = int(round(mlp_ratio * dim))
+            self.norm2 = nn.LayerNorm(dim)
+            self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, dim))
+            nn.init.zeros_(self.mlp[-1].weight)
+            nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, canvas: Tensor, rope: RoPE) -> Tensor:
+        h = self.norm1(canvas)
+        q = rope_apply_with_prefix(x=to_multihead(self.q_proj(h), self.num_heads), rope=rope)
+        k = rope_apply_with_prefix(x=to_multihead(self.k_proj(h), self.num_heads), rope=rope)
+        v = to_multihead(self.v_proj(h), self.num_heads)
+        attn = F.scaled_dot_product_attention(q, k.to(q.dtype), v.to(q.dtype))
+        canvas = canvas + self.out_proj(from_multihead(attn))
+        if self.mlp is not None:
+            assert self.norm2 is not None
+            canvas = canvas + self.mlp(self.norm2(canvas))
+        return canvas
+
+
 class CanViT(nn.Module):
     """Dual-stream vision transformer with canvas cross-attention.
 
@@ -174,6 +220,18 @@ class CanViT(nn.Module):
         log.info(f"Canvas attention: {len(read_after)} reads, {len(write_after)} writes, "
                  f"mode={cfg.canvas_update_mode}, vpe={cfg.enable_vpe}"
                  + (f", gate_bias_init={cfg.gate_bias_init}" if cfg.gate_bias_init is not None else ""))
+
+        # Optional self-attention over the canvas tokens, run once per glimpse
+        # after that glimpse's writes (see forward). Empty ModuleList when
+        # n_canvas_self_attn_blocks == 0 -> no params, no-op (current behavior).
+        assert len(cfg.canvas_self_attn_mlp_ratios) == cfg.n_canvas_self_attn_blocks
+        self.canvas_self_attn = nn.ModuleList([
+            CanvasSelfAttnBlock(dim=canvas_dim, num_heads=cfg.canvas_num_heads, mlp_ratio=r)
+            for r in cfg.canvas_self_attn_mlp_ratios
+        ])
+        if self.canvas_self_attn:
+            log.info(f"Canvas self-attn: {cfg.n_canvas_self_attn_blocks} blocks, "
+                     f"mlp_ratios={list(cfg.canvas_self_attn_mlp_ratios)}")
 
         canvas_scale = 1.0 / math.sqrt(canvas_dim)
         self.canvas_register_init = nn.Parameter(torch.randn(1, cfg.n_canvas_registers, canvas_dim) * canvas_scale)
@@ -338,6 +396,14 @@ class CanViT(nn.Module):
                 )
                 canvas = write_out if self.cfg.canvas_update_mode == "convex" else canvas + write_out
                 write_idx += 1
+
+        # Consolidate the memory between glimpses: self-attention over the canvas
+        # tokens (registers + spatial) after this glimpse's writes, so the next
+        # glimpse reads/writes against the self-attended canvas. RoPE reuses the
+        # canvas spatial_rope (registers unrotated). No-op when the ModuleList is
+        # empty. Identity at init (zero-init output projections).
+        for sa_block in self.canvas_self_attn:
+            canvas = sa_block(canvas, spatial_rope)
 
         out = LocalTokens.unpack(local, has_vpe=has_vpe, n_registers=n_regs, n_patches=n_patches)
 
