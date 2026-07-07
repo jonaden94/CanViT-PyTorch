@@ -93,6 +93,7 @@ class CanViTForImageClassification(
         backbone_name: BackboneName,
         model_config: dict,
         n_classes: int,
+        glimpse_grid_size: int | None = None,
     ):
         super().__init__()
         # Filter to known CanViTConfig fields (HF config.json may have extras)
@@ -100,6 +101,14 @@ class CanViTForImageClassification(
         cfg_dict = {k: v for k, v in model_config.items() if k in known_fields}
         cfg = CanViTConfig(**cfg_dict)
         self.canvit = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
+        # Glimpse token-grid side the model was trained with (see
+        # CanViTForPretrainingHFHub). Stored on the INNER canvit because episode
+        # runners receive `self.canvit`, not this wrapper, and read the value via
+        # getattr to derive the training-matched glimpse crop size. ``None``
+        # (checkpoints predating the field) -> runners fall back to the canonical
+        # default of 8.
+        self.glimpse_grid_size = glimpse_grid_size
+        self.canvit.glimpse_grid_size = glimpse_grid_size
         D = self.canvit.local_dim
         self.norm = nn.LayerNorm(D)
         self.head = nn.Linear(D, n_classes)
@@ -184,6 +193,7 @@ class CanViTForImageClassification(
             backbone_name=cast(BackboneName, pretrained.backbone_name),
             model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
             n_classes=n_classes,
+            glimpse_grid_size=pretrained.glimpse_grid_size,
         )
 
         # Copy base CanViT weights from pretrained (excluding pretraining heads)

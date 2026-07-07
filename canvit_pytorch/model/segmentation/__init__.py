@@ -56,6 +56,7 @@ class CanViTForSemanticSegmentation(
         num_classes: int,
         dropout: float = 0.1,
         use_ln: bool = True,
+        glimpse_grid_size: int | None = None,
     ):
         super().__init__()
         # HF config.json may carry pretraining-only fields (e.g. teacher_dim)
@@ -64,6 +65,14 @@ class CanViTForSemanticSegmentation(
         cfg_dict = {k: v for k, v in model_config.items() if k in known_fields}
         cfg = CanViTConfig(**cfg_dict)
         self.canvit = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
+        # Glimpse token-grid side the model was trained with (see
+        # CanViTForPretrainingHFHub). Stored on the INNER canvit because episode
+        # runners receive `self.canvit`, not this wrapper, and read the value via
+        # getattr to derive the training-matched glimpse crop size. ``None``
+        # (checkpoints predating the field) -> runners fall back to the canonical
+        # default of 8.
+        self.glimpse_grid_size = glimpse_grid_size
+        self.canvit.glimpse_grid_size = glimpse_grid_size
         # Head consumes canvas spatial tokens, so its dim is canvas_dim (not local_dim).
         D = self.canvit.canvas_dim
         self.head = SegmentationProbe(
@@ -155,6 +164,7 @@ class CanViTForSemanticSegmentation(
             num_classes=probe.num_classes,
             dropout=probe.dropout_p,
             use_ln=probe.use_ln,
+            glimpse_grid_size=pretrained.glimpse_grid_size,
         )
 
         # Copy bare-CanViT weights (drop pretraining-only modules)
