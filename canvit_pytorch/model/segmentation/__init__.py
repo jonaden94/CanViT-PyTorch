@@ -131,6 +131,44 @@ class CanViTForSemanticSegmentation(
         return F.interpolate(logits, size=target_size, mode="bilinear", align_corners=False), new_state
 
     @classmethod
+    def _from_pretrained_backbone(
+        cls,
+        pretrained: CanViTForPretrainingHFHub,
+        *,
+        num_classes: int,
+        dropout: float,
+        use_ln: bool,
+    ) -> "CanViTForSemanticSegmentation":
+        """Build the wrapper around a loaded pretrained CanViT (bare weights copied,
+        pretraining-only modules dropped); the head is left as constructed."""
+        cfg = pretrained.cfg
+        assert pretrained.backbone_name in get_args(BackboneName), (
+            f"Unknown ViT backbone: {pretrained.backbone_name!r}"
+        )
+        model = cls(
+            backbone_name=cast(BackboneName, pretrained.backbone_name),
+            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
+            num_classes=num_classes,
+            dropout=dropout,
+            use_ln=use_ln,
+            glimpse_grid_size=pretrained.glimpse_grid_size,
+        )
+
+        # Copy bare-CanViT weights (drop pretraining-only modules)
+        pretraining_only_prefixes = (
+            "scene_cls_head.", "scene_patches_head.",
+            "cls_standardizers.", "scene_standardizers.",
+        )
+        base_sd = {
+            k: v for k, v in pretrained.state_dict().items()
+            if not any(k.startswith(p) for p in pretraining_only_prefixes)
+        }
+        missing, unexpected = model.canvit.load_state_dict(base_sd, strict=False)
+        assert not missing, f"Missing CanViT keys: {missing}"
+        assert not unexpected, f"Unexpected CanViT keys: {unexpected}"
+        return model
+
+    @classmethod
     def from_pretrained_with_probe(
         cls,
         *,
@@ -154,31 +192,9 @@ class CanViTForSemanticSegmentation(
             f"canvas_dim={D}. Probe was trained for a different model variant."
         )
 
-        cfg = pretrained.cfg
-        assert pretrained.backbone_name in get_args(BackboneName), (
-            f"Unknown ViT backbone: {pretrained.backbone_name!r}"
+        model = cls._from_pretrained_backbone(
+            pretrained, num_classes=probe.num_classes, dropout=probe.dropout_p, use_ln=probe.use_ln
         )
-        model = cls(
-            backbone_name=cast(BackboneName, pretrained.backbone_name),
-            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
-            num_classes=probe.num_classes,
-            dropout=probe.dropout_p,
-            use_ln=probe.use_ln,
-            glimpse_grid_size=pretrained.glimpse_grid_size,
-        )
-
-        # Copy bare-CanViT weights (drop pretraining-only modules)
-        pretraining_only_prefixes = (
-            "scene_cls_head.", "scene_patches_head.",
-            "cls_standardizers.", "scene_standardizers.",
-        )
-        base_sd = {
-            k: v for k, v in pretrained.state_dict().items()
-            if not any(k.startswith(p) for p in pretraining_only_prefixes)
-        }
-        missing, unexpected = model.canvit.load_state_dict(base_sd, strict=False)
-        assert not missing, f"Missing CanViT keys: {missing}"
-        assert not unexpected, f"Unexpected CanViT keys: {unexpected}"
 
         # Copy seg head weights
         missing, unexpected = model.head.load_state_dict(probe.state_dict(), strict=True)
@@ -191,3 +207,24 @@ class CanViTForSemanticSegmentation(
             probe.num_classes, D, probe.dropout_p, probe.use_ln,
         )
         return model
+
+    @classmethod
+    def from_pretrained_with_new_probe(
+        cls,
+        *,
+        pretrained_repo: str,
+        num_classes: int,
+        dropout: float = 0.1,
+        use_ln: bool = True,
+    ) -> "CanViTForSemanticSegmentation":
+        """Load a pretrained CanViT and attach a FRESH (randomly initialized) probe.
+
+        The construction path for probe *training* (CanViT-pretrain's ade20k task):
+        same bare-backbone loading as :meth:`from_pretrained_with_probe`, but the
+        head starts untrained instead of from a published probe checkpoint.
+        """
+        log.info("Loading pretrained CanViT from %s (fresh %d-class probe)", pretrained_repo, num_classes)
+        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        return cls._from_pretrained_backbone(
+            pretrained, num_classes=num_classes, dropout=dropout, use_ln=use_ln
+        )
