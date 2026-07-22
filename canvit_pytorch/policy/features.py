@@ -100,7 +100,13 @@ class StateEncoder:
         self.canvas_grid = canvas_grid
         self.feature_groups = feature_groups
         self.needs_entropy = any(g in ("ent", "ent_delta") for g in feature_groups)
-        self.init = init_reference(seg, canvas_grid=canvas_grid, with_entropy=self.needs_entropy)
+        # prev/init are REFERENCES the delta features read, never backprop targets, so
+        # keep them detached: otherwise (joint task+policy training, CanViT-pretrain
+        # P4b) the retained graph is re-entered on the next TBPTT chunk / step and
+        # autograd raises "backward through the graph a second time". Under the frozen
+        # no_grad callers (rl_train, eval) this detach is a harmless no-op.
+        init_sp, init_ent = init_reference(seg, canvas_grid=canvas_grid, with_entropy=self.needs_entropy)
+        self.init = (init_sp.detach(), init_ent.detach() if init_ent is not None else None)
         self.init_ln = _lnc(self.init[0])
         self.prev: tuple[Tensor, Tensor | None] = self.init  # rolling (spatial, entropy)
 
@@ -120,5 +126,7 @@ class StateEncoder:
         feats = assemble_features(
             cur, self.prev[0], cur_ent, self.prev[1], self.init_ln, self.feature_groups
         )
-        self.prev = (cur, cur_ent)
+        # Store the reference DETACHED (see __init__): the current feats keep grad
+        # through `cur`, but next step's delta must not backprop into this step's state.
+        self.prev = (cur.detach(), cur_ent.detach() if cur_ent is not None else None)
         return feats
