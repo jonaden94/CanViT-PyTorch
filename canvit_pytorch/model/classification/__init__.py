@@ -215,3 +215,37 @@ class CanViTForImageClassification(
 
         log.info("Fused classifier: LN(%d) → Linear(%d, %d), pretraining heads discarded", D, D, n_classes)
         return model
+
+    @classmethod
+    def from_pretrained_with_new_head(
+        cls,
+        *,
+        pretrained_repo: str,
+        n_classes: int,
+    ) -> "CanViTForImageClassification":
+        """Load a pretrained CanViT and attach a FRESH (randomly initialized) LN → Linear
+        classification head — the construction path for classifier *training*
+        (CanViT-pretrain's in1k task, P5). Same bare-backbone copy as
+        :meth:`from_pretrained_with_probe`, but the head/norm start untrained instead of
+        fused from a published probe checkpoint (mirrors the segmentation model's
+        ``from_pretrained_with_new_probe``)."""
+        log.info("Loading pretrained CanViT from %s (fresh %d-class head)", pretrained_repo, n_classes)
+        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        cfg = pretrained.cfg
+        assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
+        model = cls(
+            backbone_name=cast(BackboneName, pretrained.backbone_name),
+            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
+            n_classes=n_classes,
+            glimpse_grid_size=pretrained.glimpse_grid_size,
+        )
+        base_sd = {k: v for k, v in pretrained.state_dict().items()
+                   if not any(k.startswith(pfx) for pfx in
+                              ("scene_cls_head.", "scene_patches_head.",
+                               "cls_standardizers.", "scene_standardizers."))}
+        missing, unexpected = model.canvit.load_state_dict(base_sd, strict=False)
+        assert not missing, f"Missing CanViT keys: {missing}"
+        assert not unexpected, f"Unexpected CanViT keys: {unexpected}"
+        log.info("Fresh classifier: LN(%d) → Linear(%d, %d) over pretrained CanViT",
+                 model.local_dim, model.local_dim, n_classes)
+        return model
