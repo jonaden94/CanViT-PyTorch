@@ -48,7 +48,31 @@ def init_reference(
     template, so the t0 delta/cos features carry deviation-from-template instead of
     dead zeros. with_entropy=False for probe-free tasks (intrinsic groups only)."""
     canvas = seg.canvit.init_state(batch_size=1, canvas_grid_size=canvas_grid).canvas
-    ent = probe_entropy(seg, canvas, canvas_grid=canvas_grid).float() if with_entropy else None
+    ent = None
+    if with_entropy:
+        # Force EVAL mode for the probe forward. The template must be a property of the
+        # WEIGHTS, not of whatever mode the caller happened to be in when it constructed
+        # the StateEncoder: the segmentation head carries a BatchNorm, so under train-mode
+        # BN this normalizes a batch of ONE synthetic blank canvas by its own statistics
+        # and returns a different template entirely.
+        #
+        # Measured 2026-07-30: train- vs eval-mode construction moved the entropy template
+        # by 1.621288, which propagated verbatim into every `ent_delta`/`cos_init` feature
+        # and shifted ~14/32 of a trained policy's chosen glimpses, costing ~0.1 mIoU at
+        # each policy timestep. It bit CanViT-pretrain's harness, which builds the policy
+        # BEFORE freezing the model (`harness/run.py` build_policy at 277, freeze at 280),
+        # while `ade20k/rl_train.py` happens to call seg.eval() first and was unaffected.
+        # Fixing it here rather than at one call site: no caller should have to know that
+        # constructing a feature encoder depends on module mode.
+        head = getattr(seg, "head", None)
+        was_training = head is not None and head.training
+        if head is not None:
+            head.eval()
+        try:
+            ent = probe_entropy(seg, canvas, canvas_grid=canvas_grid).float()
+        finally:
+            if was_training:
+                head.train()
     return _canvas_spatial(seg, canvas, canvas_grid), ent
 
 
