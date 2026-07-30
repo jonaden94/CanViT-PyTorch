@@ -40,6 +40,7 @@ from .features import FEATURE_GROUPS, feature_channels, group_sizes
 DEFAULT_POLICY_REPO = resolve_canvit_repo("qpolicy-ade20k-c64-t5-qband-2026-07-04-s2")
 
 ActionSpace = Literal["safebox", "fixation"]
+Readout = Literal["unet", "local"]
 
 
 def candidate_viewpoints(scales: tuple[float, ...], centers_per_axis: int) -> Tensor:
@@ -132,15 +133,33 @@ class ViewpointScorer(  # pyright: ignore[reportIncompatibleMethodOverride]  # S
     library_name="canvit-pytorch",
     repo_url="https://github.com/m2b3/CanViT-PyTorch",
 ):
-    """Frontend -> a ConvNeXt-V2 U-Net (encoder pools 32->1, decoder with skips back
-    to 32, full-image-registered canvas map) -> readout at the candidate centres +
-    a shared head -> one score per candidate [B, n_scale, cpa, cpa]
-    (cpa=centers_per_axis).
+    """Frontend -> body -> readout at the candidate centres + a shared head -> one score
+    per candidate [B, n_scale, cpa, cpa] (cpa=centers_per_axis).
+
+    ``readout`` selects the body, i.e. how much of the scene one candidate's score sees:
+
+    * ``"unet"`` (default, the historical architecture) — a ConvNeXt-V2 U-Net: the encoder
+      pools 32->1, so every score is conditioned on a GLOBAL bottleneck, and the decoder
+      rebuilds a full-image-registered 32x32 map. "Where to look" sees the whole scene.
+    * ``"local"`` — no U-Net: score each candidate straight off the ``Frontend`` map with a
+      1x1 conv. The ``Frontend`` is itself purely per-token (BatchNorm, per-group 1x1
+      convs, LayerNorm2d, a 1x1 token-MLP, 1x1 out — no spatial mixing), so a candidate's
+      score depends only on the canvas cell it sits on. This is the ``autoreg_tryout``
+      policy head (``nn.Linear(D, 1)`` per state token -> a heatmap over grid cells);
+      ``block_layers`` is unused in this mode.
+
+      NB exact one-cell-per-score alignment needs ``centers_per_axis == 32`` (the
+      ``POLICY_GRID`` the features arrive on): at a coarser grid the candidate centres fall
+      between map pixels and ``grid_sample``'s bilinear interpolation mixes a 2x2
+      neighbourhood. ``autoreg_tryout``'s heatmap was defined ON its state grid, so
+      ``centers_per_axis=32`` is the faithful setting.
 
     Hub I/O follows the release-stack pattern (PyTorchModelHubMixin + the loud
     strict-load SafeHubMixin): the __init__ kwargs ARE config.json, so
     `ViewpointScorer.from_pretrained(repo_or_dir)` reconstructs the exact
-    architecture, and `save_pretrained`/`push_to_hub` publish it."""
+    architecture, and `save_pretrained`/`push_to_hub` publish it. ``readout`` is
+    backward-compatible exactly like ``action_space``: a published config.json without the
+    key loads as ``"unet"``, so every existing checkpoint keeps working."""
 
     sb_grids: Tensor  # [n_scale, cpa, cpa, 2] per-scale candidate grid_sample grids (registered buffer)
 
@@ -156,14 +175,21 @@ class ViewpointScorer(  # pyright: ignore[reportIncompatibleMethodOverride]  # S
         groups: tuple[str, ...] = FEATURE_GROUPS,
         dueling: bool = False,
         action_space: ActionSpace = "safebox",
+        readout: Readout = "unet",
     ):
         super().__init__()
         scales, groups = tuple(scales), tuple(groups)  # config.json round-trips tuples as lists
         assert len(scales) == n_scale, "need one entry in `scales` per scale channel"
         self.action_space: ActionSpace = action_space
+        self.readout: Readout = readout
         self.frontend = Frontend(canvas_dim, width, groups=groups)
-        self.enc = nn.ModuleList([_stage(width, width, block_layers) for _ in range(6)])  # 32,16,8,4,2,1
-        self.dec = nn.ModuleList([_stage(2 * width, width, block_layers) for _ in range(5)])  # ->2,4,8,16,32
+        # 'local' skips the U-Net entirely -- do not INSTANTIATE it either, or the unused
+        # params would ride in the optimizer and the published state_dict.
+        if readout == "unet":
+            self.enc = nn.ModuleList([_stage(width, width, block_layers) for _ in range(6)])  # 32,16,8,4,2,1
+            self.dec = nn.ModuleList([_stage(2 * width, width, block_layers) for _ in range(5)])  # ->2,4,8,16,32
+        else:
+            self.enc = self.dec = None
         if action_space == "fixation":
             assert n_scale == 1, "fixation action space has no scale dimension (n_scale must be 1)"
             cand = fixation_candidates(centers_per_axis)
@@ -172,7 +198,12 @@ class ViewpointScorer(  # pyright: ignore[reportIncompatibleMethodOverride]  # S
         sb = cand[..., :2].flip(-1)  # (x,y) for grid_sample
         self.register_buffer("sb_grids", sb)
         self.scale_emb = nn.Parameter(torch.zeros(n_scale, width, 1, 1))  # per-scale conditioning of the shared head
-        self.head = nn.Sequential(_stage(width, width, block_layers), nn.Conv2d(width, 1, 1))
+        # 'unet': ConvNeXt blocks over the sampled candidate grid (spatial mixing AT the
+        # action resolution). 'local': a bare 1x1, so one candidate = one cell.
+        self.head = (
+            nn.Sequential(_stage(width, width, block_layers), nn.Conv2d(width, 1, 1))
+            if readout == "unet" else nn.Conv2d(width, 1, 1)
+        )
         # dueling: V(s) from the mean-pooled INPUT features (a scalar is not location-resolved, so pooled
         # conditioning is fine); the map becomes a mean-zero advantage. Argmax — hence deploy — is unchanged.
         ch = feature_channels(canvas_dim, groups)
@@ -180,15 +211,18 @@ class ViewpointScorer(  # pyright: ignore[reportIncompatibleMethodOverride]  # S
 
     def forward(self, feats: Tensor) -> Tensor:
         h = self.frontend(feats)
-        skips = []
-        for i, enc in enumerate(self.enc):
-            h = enc(h)
-            skips.append(h)
-            if i < 5:
-                h = F.avg_pool2d(h, 2)
-        d = skips[5]  # 1x1 global bottleneck
-        for j in range(len(self.dec)):
-            d = self.dec[j](torch.cat([F.interpolate(d, scale_factor=2, mode="nearest"), skips[4 - j]], dim=1))
+        if self.enc is None:  # readout='local': the Frontend map IS the score map
+            d = h
+        else:
+            skips = []
+            for i, enc in enumerate(self.enc):
+                h = enc(h)
+                skips.append(h)
+                if i < 5:
+                    h = F.avg_pool2d(h, 2)
+            d = skips[5]  # 1x1 global bottleneck
+            for j in range(len(self.dec)):
+                d = self.dec[j](torch.cat([F.interpolate(d, scale_factor=2, mode="nearest"), skips[4 - j]], dim=1))
         b = d.shape[0]
         vals = [
             self.head(F.grid_sample(d, self.sb_grids[k].expand(b, -1, -1, -1), align_corners=False) + self.scale_emb[k])

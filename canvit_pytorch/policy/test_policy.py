@@ -104,3 +104,80 @@ def test_state_encoder_full_and_intrinsic() -> None:
     fi = enc_i(state)
     assert fi.shape == (_B, feature_channels(seg.canvas_dim, INTRINSIC_GROUPS), 32, 32)
     assert torch.isfinite(fi).all()
+
+
+# --------------------------------------------------------------------------- #
+# readout='local': the autoreg_tryout policy head (per-cell 1x1, no U-Net).
+# --------------------------------------------------------------------------- #
+
+def test_local_readout_shapes_and_has_no_unet() -> None:
+    feats = torch.randn(_B, feature_channels(16), 32, 32)
+    net = _tiny_scorer(readout="local")
+    assert net(feats).shape == (_B, 2, 4, 4)  # same contract as 'unet'
+    assert net.enc is None and net.dec is None
+    # The U-Net must not be INSTANTIATED either, or its dead params would ride in the
+    # optimizer and the published state_dict.
+    assert not any(k.startswith(("enc.", "dec.")) for k in net.state_dict())
+    assert sum(p.numel() for p in net.parameters()) < sum(
+        p.numel() for p in _tiny_scorer(readout="unet").parameters())
+
+
+def test_local_readout_score_is_spatially_LOCAL() -> None:
+    """The whole point: with 'local' a candidate's score depends only on its own canvas
+    cell, where 'unet' pools to a 1x1 bottleneck so every score sees the whole scene.
+
+    Uses centers_per_axis == 32 (the POLICY_GRID the features arrive on) so candidate
+    centres land exactly on map pixels and no grid_sample interpolation blurs the test.
+    """
+    torch.manual_seed(0)
+    kw = dict(action_space="fixation", n_scale=1, scales=(1.0,), centers_per_axis=32)
+    feats = torch.randn(_B, feature_channels(16), 32, 32)
+
+    local = _tiny_scorer(readout="local", **kw).eval()
+    unet = _tiny_scorer(readout="unet", **kw).eval()
+    with torch.no_grad():
+        q_local, q_unet = local(feats), unet(feats)
+        # Perturb ONE canvas cell and see which scores move.
+        bumped = feats.clone()
+        bumped[:, :, 0, 0] += 25.0
+        d_local = (local(bumped) - q_local).abs()[0, 0]
+        d_unet = (unet(bumped) - q_unet).abs()[0, 0]
+
+    # 'local': only the co-located candidate moves; everything else is untouched.
+    assert d_local[0, 0] > 1e-4
+    assert d_local[1:, 1:].max() < 1e-5, d_local[1:, 1:].max()
+    # 'unet': the perturbation reaches distant candidates through the bottleneck.
+    assert d_unet[-1, -1] > 1e-5, d_unet[-1, -1]
+
+
+def test_local_readout_round_trips_and_defaults_to_unet(tmp_path) -> None:
+    """`readout` must behave like `action_space` did: persisted in config.json, and a
+    legacy config WITHOUT the key loads as the historical 'unet'."""
+    import json
+
+    net = _tiny_scorer(readout="local")
+    net.save_pretrained(tmp_path)
+    cfg = json.loads((tmp_path / "config.json").read_text())
+    assert cfg["readout"] == "local"
+    back = ViewpointScorer.from_pretrained(tmp_path)
+    assert back.readout == "local" and back.enc is None
+    feats = torch.randn(_B, feature_channels(16), 32, 32)
+    net.eval(), back.eval()
+    with torch.no_grad():
+        assert torch.allclose(net(feats), back(feats))
+
+    del cfg["readout"]  # a pre-existing published policy
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+    legacy = ViewpointScorer.from_pretrained(tmp_path, strict=False)
+    assert legacy.readout == "unet"
+
+
+def test_local_readout_keeps_the_dueling_value_head() -> None:
+    """VPG reads its REINFORCE baseline off `vhead`, so it must exist (and stay
+    argmax-neutral) with the local readout too."""
+    feats = torch.randn(_B, feature_channels(16), 32, 32)
+    net = _tiny_scorer(readout="local", dueling=True).eval()
+    assert net.vhead is not None
+    plain = _tiny_scorer(readout="local", dueling=False).eval()
+    with torch.no_grad():
+        assert net(feats).shape == plain(feats).shape
