@@ -14,10 +14,11 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
-from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.model.base.config import CanViTConfig, rebuild_canvit_config
 from canvit_pytorch.model.base.impl import CanViT, RecurrentState
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
-from canvit_pytorch.model.pretraining.hub import CanViTForPretrainingHFHub
+from canvit_pytorch.model.pretraining.impl import CanViTForPretraining
+from canvit_pytorch.model_source import load_pretraining, load_segmentation_probe
 from canvit_pytorch.probes import SegmentationProbe
 from canvit_pytorch.viewpoint import Viewpoint
 
@@ -59,14 +60,17 @@ class CanViTForSemanticSegmentation(
         glimpse_grid_size: int | None = None,
     ):
         super().__init__()
-        # HF config.json may carry pretraining-only fields (e.g. teacher_dim)
-        # that CanViTConfig doesn't accept; filter to known fields.
-        known_fields = CanViTConfig.__dataclass_fields__
-        cfg_dict = {k: v for k, v in model_config.items() if k in known_fields}
-        cfg = CanViTConfig(**cfg_dict)
+        # Filters pretraining-only extras (teacher_dim) AND restores the nested
+        # dataclasses that asdict() flattened — a foveated config arrives with
+        # foveated_patcher as a plain dict and fails deep in the patcher otherwise.
+        cfg = rebuild_canvit_config(model_config)
         self.canvit = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
+        # Kept so a training checkpoint of this wrapper can record enough to rebuild
+        # itself (the trainers' `model_config`); __init__ takes it but nothing else
+        # retained it, leaving the arch recoverable only from the source HF repo.
+        self.backbone_name = backbone_name
         # Glimpse token-grid side the model was trained with (see
-        # CanViTForPretrainingHFHub). Stored on the INNER canvit because episode
+        # the pretraining wrapper). Stored on the INNER canvit because episode
         # runners receive `self.canvit`, not this wrapper, and read the value via
         # getattr to derive the training-matched glimpse crop size. ``None``
         # (checkpoints predating the field) -> runners fall back to the canonical
@@ -133,7 +137,7 @@ class CanViTForSemanticSegmentation(
     @classmethod
     def _from_pretrained_backbone(
         cls,
-        pretrained: CanViTForPretrainingHFHub,
+        pretrained: CanViTForPretraining,   # HFHub subclasses this; a .pt gives the base
         *,
         num_classes: int,
         dropout: float,
@@ -182,11 +186,11 @@ class CanViTForSemanticSegmentation(
         are discarded.
         """
         log.info("Loading pretrained CanViT from %s", pretrained_repo)
-        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        pretrained = load_pretraining(pretrained_repo)
         D = pretrained.canvas_dim
 
         log.info("Loading probe from %s", probe_repo)
-        probe = SegmentationProbe.from_pretrained(probe_repo)
+        probe = load_segmentation_probe(probe_repo)
         assert probe.embed_dim == D, (
             f"Probe expects embed_dim={probe.embed_dim} but the CanViT produces "
             f"canvas_dim={D}. Probe was trained for a different model variant."
@@ -209,6 +213,41 @@ class CanViTForSemanticSegmentation(
         return model
 
     @classmethod
+    def from_checkpoint(cls, path, *, map_location: str = "cpu") -> "CanViTForSemanticSegmentation":
+        """Load a whole segmentation model out of an ``ade20k`` training ``.pt``.
+
+        Needed because such a checkpoint may be the ONLY place its weights exist: a
+        *finetune* run updates the backbone, so the source ``model_repo`` no longer
+        describes the model that was trained. (For a *probe* run the backbone is frozen, so
+        ``from_pretrained_with_probe(model_repo, <that .pt>)`` is equivalent and needs no
+        arch in the checkpoint.)
+
+        Requires a checkpoint whose ``model_config`` carries the architecture -- written by
+        the trainer from this class's own constructor arguments. Older ade20k checkpoints
+        recorded only a ``model_repo`` path and cannot be loaded this way; use that repo
+        plus the probe instead.
+        """
+        import torch
+
+        raw = torch.load(path, map_location=map_location, weights_only=False)
+        mc = raw.get("model_config") or {}
+        if "canvit" not in mc or "backbone_name" not in mc:
+            raise KeyError(
+                f"{path} does not record its architecture (model_config keys: "
+                f"{sorted(mc)}). It predates self-describing downstream checkpoints -- "
+                f"load it as model_repo={mc.get('model_repo')!r} + this file as the probe.")
+        model = cls(
+            backbone_name=cast(BackboneName, mc["backbone_name"]),
+            model_config=mc["canvit"],
+            num_classes=mc["num_classes"],
+            dropout=mc.get("dropout", 0.1),
+            use_ln=mc.get("use_ln", True),
+            glimpse_grid_size=mc.get("glimpse_grid_size"),
+        )
+        model.load_state_dict(raw["model_state"], strict=True)
+        return model
+
+    @classmethod
     def from_pretrained_with_new_probe(
         cls,
         *,
@@ -224,7 +263,7 @@ class CanViTForSemanticSegmentation(
         head starts untrained instead of from a published probe checkpoint.
         """
         log.info("Loading pretrained CanViT from %s (fresh %d-class probe)", pretrained_repo, num_classes)
-        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        pretrained = load_pretraining(pretrained_repo)
         return cls._from_pretrained_backbone(
             pretrained, num_classes=num_classes, dropout=dropout, use_ln=use_ln
         )

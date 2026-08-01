@@ -9,9 +9,11 @@ from typing import Self
 import torch
 from torch import Tensor, nn
 
+from canvit_pytorch.checkpoint_schema import migrate_standardizers_in_place, normalize_schema
+
 from canvit_pytorch.backbone import ViTBackbone, create_backbone
 from canvit_pytorch.model.base import CanViT, CanViTOutput, RecurrentState
-from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.model.base.config import CanViTConfig, coerce_nested_configs
 from canvit_pytorch.modulation import Modulation
 from canvit_pytorch.rope import RoPE
 from canvit_pytorch.standardizers import CLSStandardizer, PatchStandardizer
@@ -25,6 +27,40 @@ class CanViTForPretrainingConfig(CanViTConfig):
     """Model configuration for CanViTForPretraining."""
 
     teacher_dim: int
+
+
+def glimpse_grid_size_of(ckpt: dict, backbone: ViTBackbone) -> int:
+    """The trained glimpse edge in TOKENS, from whichever field the checkpoint recorded.
+
+    Two units are in play and they are easy to confuse:
+      * ``glimpse_grid_size`` — TOKENS per glimpse edge. What the unified trainer records
+        and what HF ``config.json`` carries.
+      * ``glimpse_size_px``   — PIXELS. What the legacy flat writer recorded.
+
+    Pixels are NOT ``tokens × patch_size``: with overlapping patches
+    (``patch_stride < patch_size``) the window is ``(tokens-1) * stride + patch``, which
+    only reduces to ``tokens × patch`` when stride equals patch size. That formula is the
+    one ``distill/model.py`` builds the model with, so it is the only correct inverse here.
+
+    Absent both (checkpoints predating either field) -> the canonical default of 8.
+    """
+    if (grid := ckpt.get("glimpse_grid_size")) is not None:
+        return int(grid)
+    if (px := ckpt.get("glimpse_size_px")) is not None:
+        return int((int(px) - backbone.patch_size_px) // backbone.patch_stride_px + 1)
+    return 8
+
+
+def rebuild_pretraining_config(model_config: dict) -> CanViTForPretrainingConfig:
+    """Rebuild the pretraining model config from its serialized dict form.
+
+    Shared by the HF-hub loader and :meth:`CanViTForPretraining.from_checkpoint` — both
+    deserialize the same dict, and a second copy of this logic would silently mis-build
+    foveated models on whichever path fell behind. See
+    :func:`canvit_pytorch.model.base.config.coerce_nested_configs` for what the nesting
+    problem is.
+    """
+    return CanViTForPretrainingConfig(**coerce_nested_configs(model_config))
 
 
 @dataclass
@@ -113,22 +149,47 @@ class CanViTForPretraining(CanViT):
 
     @classmethod
     def from_checkpoint(cls, path: Path | str, *, map_location: str | torch.device = "cpu") -> Self:
-        """Load from local .pt checkpoint file."""
+        """Load from a local training ``.pt`` checkpoint, from either trainer schema.
+
+        The peer of ``CanViTForPretrainingHFHub.from_pretrained``: same model, different
+        source. Both go through :func:`rebuild_pretraining_config`, so a foveated model
+        loads identically either way.
+
+        Only *pretraining* checkpoints carry their own architecture. A downstream
+        (ade20k / in1k) checkpoint records a ``model_repo`` pointer instead, so
+        :func:`normalize_schema` raises a descriptive ``KeyError`` for it — load those via
+        that repo plus their probe/head.
+        """
         log.info("Loading checkpoint from %s (map_location=%s)", path, map_location)
         ckpt = torch.load(path, map_location=map_location, weights_only=False)
-        log.info("backbone_name=%s, canvas_patch_grid_sizes=%s", ckpt["backbone_name"], ckpt["canvas_patch_grid_sizes"])
-        backbone = create_backbone(ckpt["backbone_name"])
-        # Fall back to a sensible default for legacy checkpoints that don't
-        # serialize ``glimpse_size_px``: 8 × patch_size_px (matches the old
-        # ``glimpse_grid_size=8`` default used during pretraining).
-        glimpse_size_px = int(ckpt.get("glimpse_size_px") or 8 * backbone.patch_size_px)
+        # Accept both writers (flat legacy and the unified trainer's model_state +
+        # metadata), then fold in pre-submodule standardizer state if this is old enough.
+        ckpt = normalize_schema(ckpt)
+        migrate_standardizers_in_place(ckpt)
+        log.info("backbone_name=%s, canvas_patch_grid_sizes=%s",
+                 ckpt["backbone_name"], ckpt["canvas_patch_grid_sizes"])
+        # ``patch_stride`` (overlapping patches: stride < patch_size) lives OUTSIDE
+        # model_config and is needed to rebuild the patch-embed conv. None ->
+        # create_backbone defaults to patch_size, so non-overlapping models are unaffected.
+        backbone = create_backbone(ckpt["backbone_name"], patch_stride=ckpt.get("patch_stride"))
         model = cls(
             backbone=backbone,
-            cfg=CanViTForPretrainingConfig(**ckpt["model_config"]),
-            glimpse_size_px=glimpse_size_px,
+            cfg=rebuild_pretraining_config(ckpt["model_config"]),
             backbone_name=ckpt["backbone_name"],
             canvas_patch_grid_sizes=ckpt["canvas_patch_grid_sizes"],
         )
+        # Mirror the HF loader EXACTLY, which is the whole contract of this method: a model
+        # loaded from a .pt must be indistinguishable from one loaded from that .pt's HF
+        # export. Two consequences, both load-bearing:
+        #   * ``glimpse_size_px`` stays None, so the uniform patcher does NOT crop
+        #     internally. Downstream consumers (canvit_eval/episode.py,
+        #     ade20k/rollout.py) crop the glimpse THEMSELVES from glimpse_grid_size; a
+        #     model that also cropped internally would crop twice.
+        #   * ``glimpse_grid_size`` IS set, because those same consumers read it via
+        #     getattr and hard-error when it is missing.
+        # Trainers that want the model to crop (distill/model.py) pass glimpse_size_px at
+        # construction instead of coming through here.
+        model.glimpse_grid_size = glimpse_grid_size_of(ckpt, backbone)
         model.load_state_dict(ckpt["state_dict"])
         log.info("Loaded %d parameters", sum(p.numel() for p in model.parameters()))
         return model

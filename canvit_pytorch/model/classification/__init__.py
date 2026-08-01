@@ -10,9 +10,9 @@ from torch import Tensor, nn
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
-from canvit_pytorch.model.base.config import CanViTConfig
+from canvit_pytorch.model.base.config import CanViTConfig, rebuild_canvit_config
 from canvit_pytorch.model.base.impl import CanViT, RecurrentState
-from canvit_pytorch.model.pretraining.hub import CanViTForPretrainingHFHub
+from canvit_pytorch.model_source import load_pretraining
 from canvit_pytorch.viewpoint import Viewpoint
 
 log = logging.getLogger(__name__)
@@ -96,11 +96,15 @@ class CanViTForImageClassification(
         glimpse_grid_size: int | None = None,
     ):
         super().__init__()
-        # Filter to known CanViTConfig fields (HF config.json may have extras)
-        known_fields = CanViTConfig.__dataclass_fields__
-        cfg_dict = {k: v for k, v in model_config.items() if k in known_fields}
-        cfg = CanViTConfig(**cfg_dict)
+        # Filters pretraining-only extras (teacher_dim) AND restores the nested
+        # dataclasses that asdict() flattened — a foveated config arrives with
+        # foveated_patcher as a plain dict and fails deep in the patcher otherwise.
+        cfg = rebuild_canvit_config(model_config)
         self.canvit = CanViT(backbone=create_backbone(backbone_name), cfg=cfg)
+        # Kept so a training checkpoint of this wrapper can record enough to rebuild
+        # itself (the trainers' `model_config`); __init__ takes it but nothing else
+        # retained it, leaving the arch recoverable only from the source HF repo.
+        self.backbone_name = backbone_name
         # Glimpse token-grid side the model was trained with (see
         # CanViTForPretrainingHFHub). Stored on the INNER canvit because episode
         # runners receive `self.canvit`, not this wrapper, and read the value via
@@ -154,7 +158,7 @@ class CanViTForImageClassification(
         See :func:`fuse_probe` for the algebra.
         """
         log.info("Loading pretrained model from %s", pretrained_repo)
-        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        pretrained = load_pretraining(pretrained_repo)
         D = pretrained.local_dim
 
         log.info("Loading probe from %s", probe_repo)
@@ -217,6 +221,37 @@ class CanViTForImageClassification(
         return model
 
     @classmethod
+    def from_checkpoint(cls, path, *, map_location: str = "cpu") -> "CanViTForImageClassification":
+        """Load a whole classifier out of an ``in1k`` training ``.pt``.
+
+        An in1k FINETUNE updates the backbone, so its checkpoint is the only place those
+        weights exist -- the source ``model_repo`` describes the model it *started* from,
+        not the one that was trained. This is the peer of ``from_pretrained``; the same
+        checkpoint can also be exported with ``canvit_train.checkpoint.to_hf``.
+
+        Requires a checkpoint whose ``model_config`` carries the architecture. Older in1k
+        checkpoints recorded only a ``model_repo`` path; export those with ``to_hf`` while
+        the pointer still resolves.
+        """
+        import torch
+
+        raw = torch.load(path, map_location=map_location, weights_only=False)
+        mc = raw.get("model_config") or {}
+        if "canvit" not in mc or "backbone_name" not in mc:
+            raise KeyError(
+                f"{path} does not record its architecture (model_config keys: "
+                f"{sorted(mc)}). It predates self-describing downstream checkpoints -- "
+                f"convert it with canvit_train.checkpoint.to_hf instead.")
+        model = cls(
+            backbone_name=cast(BackboneName, mc["backbone_name"]),
+            model_config=mc["canvit"],
+            n_classes=mc["n_classes"],
+            glimpse_grid_size=mc.get("glimpse_grid_size"),
+        )
+        model.load_state_dict(raw["model_state"], strict=True)
+        return model
+
+    @classmethod
     def from_pretrained_with_new_head(
         cls,
         *,
@@ -230,7 +265,7 @@ class CanViTForImageClassification(
         fused from a published probe checkpoint (mirrors the segmentation model's
         ``from_pretrained_with_new_probe``)."""
         log.info("Loading pretrained CanViT from %s (fresh %d-class head)", pretrained_repo, n_classes)
-        pretrained = CanViTForPretrainingHFHub.from_pretrained(pretrained_repo)
+        pretrained = load_pretraining(pretrained_repo)
         cfg = pretrained.cfg
         assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
         model = cls(

@@ -1,7 +1,9 @@
 """CanViT configuration."""
 
+import dataclasses
+import typing
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from canvit_pytorch.modulation import ViTModulationConfig
 from canvit_pytorch.patcher import FoveatedPatcherConfig, PatcherName, SquarePatcherConfig
@@ -60,3 +62,75 @@ class CanViTConfig:
     @property
     def canvas_dim(self) -> int:
         return self.canvas_num_heads * self.canvas_head_dim
+
+
+def _coerce(tp, value):
+    """Recursively rebuild a dataclass of type ``tp`` from ``value`` when ``value`` is a
+    dict (as produced by ``asdict`` at save time), coercing any nested dataclass-typed
+    fields at any depth. Non-dict values and non-dataclass targets pass through unchanged.
+
+    Faithful-or-loud-fail by design — it never fabricates values:
+      * EVERY key in ``value`` is passed to the dataclass constructor, so a key this code
+        does not know (e.g. a config field added to the model *after* this loader was
+        written, loaded without updating the loader) raises a loud ``TypeError`` rather
+        than being silently dropped. This is what prevents a future, un-updated eval from
+        silently evaluating a model that diverges from pretraining.
+      * A field present in the dataclass but ABSENT from ``value`` takes the dataclass
+        default (a checkpoint predating that field). This is the only place defaults enter,
+        so new fields MUST default to backward-compatible behavior — the one invariant no
+        loader can enforce for you (the strict state_dict load is the backstop for anything
+        affecting weights).
+    """
+    if not isinstance(value, dict):
+        return value
+    if typing.get_origin(tp) is not None:  # Optional[X] / Union[...] -> the dataclass member
+        tp = next((a for a in typing.get_args(tp) if dataclasses.is_dataclass(a)), None)
+    if tp is None or not dataclasses.is_dataclass(tp):
+        return value
+    try:
+        hints = typing.get_type_hints(tp)
+    except Exception:  # noqa: BLE001 — unresolved annotations: fall back to raw field types
+        hints = {f.name: f.type for f in dataclasses.fields(tp)}
+    # Pass ALL keys (recursing into known dataclass-typed fields); an unknown key
+    # reaches tp(**...) and raises TypeError — never silently dropped.
+    return tp(**{k: (_coerce(hints[k], v) if k in hints else v) for k, v in value.items()})
+
+
+def coerce_nested_configs(model_config: dict) -> dict[str, Any]:
+    """Turn the dataclass-valued entries of a serialized config back into dataclasses.
+
+    ``asdict()`` flattens nested dataclasses to dicts on save, but ``SomeConfig(**d)`` only
+    builds SHALLOWLY — so ``foveated_patcher``, ``square_patcher`` and ``vit_modulation``
+    would arrive as dicts and blow up on first attribute access, deep inside the patcher
+    (``'dict' object has no attribute 'hidden_dims_patch_embed'``). Every loader that
+    rebuilds a config from a dict must go through here.
+
+    Gated to only the ACTIVE patcher + vit_modulation, so an existing checkpoint
+    instantiates a byte-for-byte identical config.
+    """
+    if (model_config.get("patcher_name") == "foveated"
+            and isinstance(model_config.get("foveated_patcher"), dict)):
+        model_config = {**model_config,
+                        "foveated_patcher": _coerce(FoveatedPatcherConfig, model_config["foveated_patcher"])}
+    if (model_config.get("patcher_name") == "square"
+            and isinstance(model_config.get("square_patcher"), dict)):
+        model_config = {**model_config,
+                        "square_patcher": _coerce(SquarePatcherConfig, model_config["square_patcher"])}
+    if isinstance(model_config.get("vit_modulation"), dict):
+        model_config = {**model_config,
+                        "vit_modulation": _coerce(ViTModulationConfig, model_config["vit_modulation"])}
+    return model_config
+
+
+def rebuild_canvit_config(model_config: dict) -> "CanViTConfig":
+    """Rebuild a :class:`CanViTConfig` from its serialized dict form.
+
+    Filters to known ``CanViTConfig`` fields first, because a config.json written for a
+    PRETRAINING model carries extras this class does not accept (``teacher_dim``), then
+    restores the nested dataclasses. Used by the downstream wrappers
+    (``CanViTForSemanticSegmentation`` / ``CanViTForImageClassification``), which are handed
+    a plain dict by ``from_pretrained`` and by their ``from_checkpoint``.
+    """
+    known = CanViTConfig.__dataclass_fields__
+    return CanViTConfig(**coerce_nested_configs(
+        {k: v for k, v in model_config.items() if k in known}))
