@@ -224,3 +224,74 @@ def test_missing_pt_fails_loudly_instead_of_becoming_a_hub_id(tmp_path):
     with pytest.raises(FileNotFoundError):
         is_checkpoint(tmp_path / "nope.pt")
     assert is_checkpoint("canvit/some-hub-repo") is False
+
+
+# --- downstream wrappers: save_pretrained -> from_pretrained ------------------
+# The pretraining wrapper's .pt/HF equivalence is covered above. The DOWNSTREAM wrappers
+# have a second round trip nobody was checking: they are constructed from a pretrained
+# CanViT and then PUBLISHED with PyTorchModelHubMixin.save_pretrained, which records only
+# the __init__ kwargs it can JSON-encode. Passing `model_config` as live nested dataclasses
+# made it silently unencodable, so the key was DROPPED and from_pretrained raised
+# "missing 1 required keyword-only argument: 'model_config'" — i.e. every classifier and
+# probe this stack published was unloadable, and `to_hf`'s in1k branch never worked at all.
+# Its test asserted the dispatch, not the artifact, so it passed throughout.
+
+
+def _fixed_step(model, *, n_classes_dim: int):
+    """One forward on a fixed input. Equal configs + equal weights already imply equal
+    outputs, so this is belt-and-braces — but it is the assertion that would survive a
+    config that reconstructs to something equal-looking yet differently behaving."""
+    from canvit_pytorch.viewpoint import Viewpoint
+
+    torch.manual_seed(0)
+    glimpse = torch.randn(2, 3, GRID * 16, GRID * 16)
+    state = model.init_state(batch_size=2, canvas_grid_size=GRID)
+    vp = Viewpoint(centers=torch.zeros(2, 2), scales=torch.ones(2))
+    model.eval()
+    with torch.no_grad():
+        logits, _ = model(glimpse=glimpse, state=state, viewpoint=vp)
+    assert logits.shape[1] == n_classes_dim
+    return logits
+
+
+def _assert_publishable(built, reloaded, *, n_classes_dim: int):
+    assert built.canvit.cfg == reloaded.canvit.cfg
+    assert built.backbone_name == reloaded.backbone_name
+    assert built.glimpse_grid_size == reloaded.glimpse_grid_size
+    sa, sb = built.state_dict(), reloaded.state_dict()
+    assert set(sa) == set(sb), set(sa) ^ set(sb)
+    bad = [k for k in sa if not torch.equal(sa[k], sb[k])]
+    assert not bad, f"tensors differ: {bad[:5]}"
+    a = _fixed_step(built, n_classes_dim=n_classes_dim)
+    b = _fixed_step(reloaded, n_classes_dim=n_classes_dim)
+    assert torch.equal(a, b), (a - b).abs().max()
+
+
+@pytest.mark.parametrize("pair", ["uniform_pair", "foveated_pair"])
+def test_classifier_round_trips_through_save_pretrained(request, pair, tmp_path):
+    from canvit_pytorch import CanViTForImageClassification
+
+    _, hf = request.getfixturevalue(pair)
+    clf = CanViTForImageClassification.from_pretrained_with_new_head(
+        pretrained_repo=str(hf), n_classes=7)
+    out = tmp_path / f"clf-{pair}"
+    clf.save_pretrained(out)
+    assert "model_config" in json.loads((out / "config.json").read_text()), (
+        "save_pretrained dropped model_config — the published dir cannot be rebuilt")
+    _assert_publishable(clf, CanViTForImageClassification.from_pretrained(str(out)),
+                        n_classes_dim=7)
+
+
+@pytest.mark.parametrize("pair", ["uniform_pair", "foveated_pair"])
+def test_segmentation_round_trips_through_save_pretrained(request, pair, tmp_path):
+    from canvit_pytorch import CanViTForSemanticSegmentation
+
+    _, hf = request.getfixturevalue(pair)
+    seg = CanViTForSemanticSegmentation.from_pretrained_with_new_probe(
+        pretrained_repo=str(hf), num_classes=5)
+    out = tmp_path / f"seg-{pair}"
+    seg.save_pretrained(out)
+    assert "model_config" in json.loads((out / "config.json").read_text()), (
+        "save_pretrained dropped model_config — the published dir cannot be rebuilt")
+    _assert_publishable(seg, CanViTForSemanticSegmentation.from_pretrained(str(out)),
+                        n_classes_dim=5)

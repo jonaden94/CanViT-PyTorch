@@ -14,7 +14,10 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
-from canvit_pytorch.model.base.config import CanViTConfig, rebuild_canvit_config
+from canvit_pytorch.model.base.config import (
+    rebuild_canvit_config,
+    serialize_canvit_config,
+)
 from canvit_pytorch.model.base.impl import CanViT, RecurrentState
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
 from canvit_pytorch.model.pretraining.impl import CanViTForPretraining
@@ -151,7 +154,7 @@ class CanViTForSemanticSegmentation(
         )
         model = cls(
             backbone_name=cast(BackboneName, pretrained.backbone_name),
-            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
+            model_config=serialize_canvit_config(cfg),
             num_classes=num_classes,
             dropout=dropout,
             use_ln=use_ln,

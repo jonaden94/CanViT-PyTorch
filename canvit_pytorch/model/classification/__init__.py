@@ -10,7 +10,10 @@ from torch import Tensor, nn
 
 from canvit_pytorch.backbone import BackboneName, create_backbone
 from canvit_pytorch.model.hub_mixin import SafeHubMixin
-from canvit_pytorch.model.base.config import CanViTConfig, rebuild_canvit_config
+from canvit_pytorch.model.base.config import (
+    rebuild_canvit_config,
+    serialize_canvit_config,
+)
 from canvit_pytorch.model.base.impl import CanViT, RecurrentState
 from canvit_pytorch.model_source import load_pretraining
 from canvit_pytorch.viewpoint import Viewpoint
@@ -195,7 +198,7 @@ class CanViTForImageClassification(
         assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
         model = cls(
             backbone_name=cast(BackboneName, pretrained.backbone_name),
-            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
+            model_config=serialize_canvit_config(cfg),
             n_classes=n_classes,
             glimpse_grid_size=pretrained.glimpse_grid_size,
         )
@@ -270,7 +273,7 @@ class CanViTForImageClassification(
         assert pretrained.backbone_name in get_args(BackboneName), f"Unknown backbone: {pretrained.backbone_name!r}"
         model = cls(
             backbone_name=cast(BackboneName, pretrained.backbone_name),
-            model_config={k: v for k, v in vars(cfg).items() if k in CanViTConfig.__dataclass_fields__},
+            model_config=serialize_canvit_config(cfg),
             n_classes=n_classes,
             glimpse_grid_size=pretrained.glimpse_grid_size,
         )

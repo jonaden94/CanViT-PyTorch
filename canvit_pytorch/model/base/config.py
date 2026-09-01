@@ -122,6 +122,24 @@ def coerce_nested_configs(model_config: dict) -> dict[str, Any]:
     return model_config
 
 
+def serialize_canvit_config(cfg: "CanViTConfig") -> dict[str, Any]:
+    """The inverse of :func:`rebuild_canvit_config`: a JSON-encodable dict of ``cfg``.
+
+    Two callers need this and both are easy to get wrong by reaching for ``vars(cfg)``:
+    writing a config.json, and passing ``model_config=`` to a downstream wrapper that will
+    later be published with ``PyTorchModelHubMixin.save_pretrained``. The mixin records only
+    the ``__init__`` kwargs it can JSON-encode, so live nested dataclasses are **silently
+    dropped** — the published dir then has no ``model_config`` and ``from_pretrained`` fails
+    with "missing 1 required keyword-only argument". ``asdict`` flattens the nesting, which
+    is the form ``rebuild_canvit_config`` expects anyway.
+
+    Accepts a subclass (``CanViTForPretrainingConfig``) and drops its extra fields, since a
+    downstream wrapper's ``CanViTConfig`` does not accept ``teacher_dim``.
+    """
+    known = CanViTConfig.__dataclass_fields__
+    return {k: v for k, v in dataclasses.asdict(cfg).items() if k in known}
+
+
 def rebuild_canvit_config(model_config: dict) -> "CanViTConfig":
     """Rebuild a :class:`CanViTConfig` from its serialized dict form.
 
