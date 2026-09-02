@@ -25,3 +25,6 @@ bench/results/
 # Node.js
 node_modules
 .venv-cu126/
+
+# bench/pt writes fresh timing runs here; only baselines/ is committed
+bench/pt/results/
